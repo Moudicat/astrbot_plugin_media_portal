@@ -301,8 +301,6 @@ class WebUIServer:
     def get_preferred_base_url(self) -> str:
         if self.public_base_url:
             return self.public_base_url
-        if self.callback_api_base:
-            return self.callback_api_base
         if self.host in {"0.0.0.0", "::"}:
             for ip in get_local_ip_addresses():
                 if ip and not ip.startswith("127."):
