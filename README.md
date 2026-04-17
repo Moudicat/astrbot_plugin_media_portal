@@ -19,6 +19,7 @@
 - [🌌 Astrbot Media Portal](#-astrbot-media-portal)
   - [📑 目录](#-目录)
   - [🚀 功能特点](#-功能特点)
+  - [🖼️ 截图](#-截图)
   - [📦 安装方式](#-安装方式)
   - [🛠️ 快速开始](#️-快速开始)
   - [🤖 LLM 工具列表](#-llm-工具列表)
@@ -41,6 +42,11 @@
 | 📱 响应式 | 同时适配 PC 与移动端 |
 | 🔍 Data 资源浏览 | 只读浏览 AstrBot `/data` 目录，支持图片/视频/音频预览 |
 | 🔐 安全控制 | 登录限流、媒体只读 token、路径越界防护、体积限制 |
+
+## 🖼️ 截图
+
+<img width="1274" height="981" alt="085251bc35b6c5aa4d7c2304d81839e6" src="https://github.com/user-attachments/assets/a9184815-114b-458b-be5c-8cb32c634e95" />
+
 
 ## 📦 安装方式
 
