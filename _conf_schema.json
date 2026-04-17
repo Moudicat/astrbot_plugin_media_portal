@@ -1,0 +1,90 @@
+{
+  "webui": {
+    "description": "WebUI 管理面板",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 WebUI",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后会在插件加载时启动多媒体管理控制台。"
+      },
+      "host": {
+        "description": "监听地址",
+        "type": "string",
+        "default": "0.0.0.0",
+        "hint": "127.0.0.1 仅本机可访问，0.0.0.0 允许局域网访问。"
+      },
+      "port": {
+        "description": "监听端口",
+        "type": "int",
+        "default": 7003,
+        "hint": "请确保不与 AstrBot 主面板或其他服务端口冲突。"
+      },
+      "access_password": {
+        "description": "访问密码",
+        "type": "string",
+        "default": "",
+        "obvious_hint": true,
+        "hint": "留空会在启动时自动生成随机密码。"
+      },
+      "session_timeout": {
+        "description": "会话超时（秒）",
+        "type": "int",
+        "default": 3600,
+        "hint": "登录 Token 的活动超时时间。"
+      },
+      "public_base_url": {
+        "description": "自定义公开访问地址",
+        "type": "string",
+        "default": "",
+        "hint": "例如 https://media.example.com。留空时自动使用 host:port。"
+      },
+      "expose_astrbot_data": {
+        "description": "暴露 AstrBot 数据目录（只读）",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后可在 WebUI 浏览 /astrbot/data 下文件。"
+      }
+    }
+  },
+  "storage": {
+    "description": "存储配置",
+    "type": "object",
+    "items": {
+      "media_dir_override": {
+        "description": "媒体库目录覆盖",
+        "type": "string",
+        "default": "",
+        "hint": "留空使用 {astrbot_data}/media。可填写绝对路径。"
+      }
+    }
+  },
+  "downloader": {
+    "description": "下载与落盘配置",
+    "type": "object",
+    "items": {
+      "max_file_size_mb": {
+        "description": "单文件最大体积（MB）",
+        "type": "int",
+        "default": 50
+      },
+      "allowed_kinds": {
+        "description": "允许保存的媒体类型",
+        "type": "list",
+        "default": [
+          "image",
+          "video",
+          "audio"
+        ],
+        "hint": "可选 image / video / audio。"
+      },
+      "default_move_local": {
+        "description": "本地路径保存默认移动文件",
+        "type": "bool",
+        "default": true,
+        "hint": "开启时 save_media(local_path) 默认使用移动（mv）而非拷贝。"
+      }
+    }
+  }
+}
