@@ -6,7 +6,7 @@
       "enabled": {
         "description": "启用 WebUI",
         "type": "bool",
-        "default": true,
+        "default": false,
         "hint": "开启后会在插件加载时启动多媒体管理控制台。"
       },
       "host": {
@@ -43,8 +43,32 @@
       "expose_astrbot_data": {
         "description": "暴露 AstrBot 数据目录（只读）",
         "type": "bool",
-        "default": true,
-        "hint": "开启后可在 WebUI 浏览 /astrbot/data 下文件。"
+        "default": false,
+        "hint": "开启后可在 WebUI 浏览 /astrbot/data 下文件。建议仅在受信任环境启用。"
+      },
+      "allowed_origins": {
+        "description": "允许跨域来源（CORS）",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示不开放跨域。按需填写完整 Origin（如 https://panel.example.com）。"
+      },
+      "readonly_token_ttl": {
+        "description": "媒体预览 token 有效期（秒）",
+        "type": "int",
+        "default": 3600,
+        "hint": "WebUI 前端用于媒体预览的只读 token 过期时间。"
+      },
+      "share_url_ttl": {
+        "description": "分享链接 token 有效期（秒）",
+        "type": "int",
+        "default": 3600,
+        "hint": "get_media_url / 复制链接生成的媒体访问 token 过期时间。"
+      },
+      "data_token_ttl": {
+        "description": "Data 文件预览 token 有效期（秒）",
+        "type": "int",
+        "default": 3600,
+        "hint": "Data 浏览中的 /api/data-file 访问 token 过期时间。"
       }
     }
   },
@@ -52,22 +76,24 @@
     "description": "存储配置",
     "type": "object",
     "items": {
-      "media_dir_override": {
-        "description": "媒体库目录覆盖",
+      "location_mode": {
+        "description": "媒体库存储位置",
         "type": "string",
-        "default": "",
-        "hint": "留空使用 {astrbot_data}/media。可填写绝对路径。"
+        "default": "plugin_data",
+        "options": ["astrbot_data", "plugin_data"],
+        "hint": "plugin_data=data/plugin_data/astrbot_plugin_media_portal/media(默认)；astrbot_data=data/media"
       }
     }
   },
   "downloader": {
-    "description": "下载与落盘配置",
+    "description": "下载配置",
     "type": "object",
     "items": {
       "max_file_size_mb": {
         "description": "单文件最大体积（MB）",
         "type": "int",
-        "default": 50
+        "default": 500,
+        "hint": "WebUI 上传与 URL 下载都遵循此上限，默认 500MB。"
       },
       "allowed_kinds": {
         "description": "允许保存的媒体类型",

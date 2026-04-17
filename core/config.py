@@ -47,6 +47,23 @@ def _as_str(value: Any, default: str = "") -> str:
     return str(value).strip()
 
 
+def _as_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        tokens = [item.strip() for item in value.replace(";", ",").split(",")]
+        return [item for item in tokens if item]
+    if isinstance(value, (list, tuple, set)):
+        result: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                result.append(text)
+        return result
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _normalize_base_url(url: str) -> str:
     normalized = url.strip()
     if not normalized:
@@ -78,23 +95,27 @@ def _parse_allowed_kinds(value: Any) -> set[str]:
 
 @dataclass(slots=True)
 class WebUISettings:
-    enabled: bool = True
+    enabled: bool = False
     host: str = "0.0.0.0"
     port: int = 7003
     access_password: str = ""
     session_timeout: int = 3600
     public_base_url: str = ""
-    expose_astrbot_data: bool = True
+    expose_astrbot_data: bool = False
+    allowed_origins: list[str] = field(default_factory=list)
+    readonly_token_ttl: int = 3600
+    share_url_ttl: int = 3600
+    data_token_ttl: int = 3600
 
 
 @dataclass(slots=True)
 class StorageSettings:
-    media_dir_override: str = ""
+    location_mode: str = "plugin_data"
 
 
 @dataclass(slots=True)
 class DownloaderSettings:
-    max_file_size_mb: int = 50
+    max_file_size_mb: int = 500
     allowed_kinds: set[str] = field(default_factory=lambda: {"image", "video", "audio"})
     default_move_local: bool = True
 
@@ -105,23 +126,47 @@ class PluginSettings:
     storage: StorageSettings
     downloader: DownloaderSettings
     astrbot_data_dir: Path
+    plugin_data_dir: Path
     media_root: Path
+    media_location_mode: str = "plugin_data"
     raw_config: dict[str, Any] = field(default_factory=dict)
 
 
-def _resolve_media_root(storage: StorageSettings, astrbot_data_dir: Path) -> Path:
-    raw_override = storage.media_dir_override.strip()
-    if not raw_override:
-        return (astrbot_data_dir / "media").resolve()
-
-    override_path = Path(raw_override).expanduser()
-    if not override_path.is_absolute():
-        override_path = (astrbot_data_dir / override_path).resolve()
-    return override_path.resolve()
+_VALID_LOCATION_MODES = {"astrbot_data", "plugin_data"}
 
 
-def load_plugin_settings(config: dict[str, Any] | None) -> PluginSettings:
-    """加载插件配置并解析关键目录。"""
+def _resolve_media_root(
+    storage: StorageSettings,
+    astrbot_data_dir: Path,
+    plugin_data_dir: Path,
+) -> tuple[Path, str]:
+    """解析媒体根目录。
+
+    返回 ``(media_root, effective_mode)``，其中 ``effective_mode`` 为最终生效的模式。
+    """
+    mode = (storage.location_mode or "plugin_data").strip().lower()
+    if mode not in _VALID_LOCATION_MODES:
+        logger.warning(
+            "未知的 storage.location_mode=%s，回退到 plugin_data。", mode
+        )
+        mode = "plugin_data"
+
+    if mode == "plugin_data":
+        return (plugin_data_dir / "media").resolve(), "plugin_data"
+    return (astrbot_data_dir / "media").resolve(), "astrbot_data"
+
+
+def load_plugin_settings(
+    config: dict[str, Any] | None,
+    plugin_data_dir: Path | None = None,
+) -> PluginSettings:
+    """加载插件配置并解析关键目录。
+
+    Args:
+        config: AstrBot 注入的原始配置字典。
+        plugin_data_dir: 插件独立数据目录，通常由 ``StarTools.get_data_dir()`` 得到。
+            为空时会退化到 ``{astrbot_data}/plugin_data/astrbot_plugin_media_portal``。
+    """
     raw_config = config or {}
     webui_raw = _read_section(raw_config, "webui")
     storage_raw = _read_section(raw_config, "storage")
@@ -130,24 +175,33 @@ def load_plugin_settings(config: dict[str, Any] | None) -> PluginSettings:
     # 兼容旧平铺配置
     if not webui_raw and "webui_port" in raw_config:
         webui_raw = {
-            "enabled": True,
+            "enabled": False,
             "port": raw_config.get("webui_port"),
         }
 
     webui = WebUISettings(
-        enabled=_as_bool(webui_raw.get("enabled"), True),
+        enabled=_as_bool(webui_raw.get("enabled"), False),
         host=_as_str(webui_raw.get("host"), "0.0.0.0") or "0.0.0.0",
         port=_as_int(webui_raw.get("port"), 7003, minimum=1),
         access_password=_as_str(webui_raw.get("access_password"), ""),
         session_timeout=_as_int(webui_raw.get("session_timeout"), 3600, minimum=60),
         public_base_url=_normalize_base_url(_as_str(webui_raw.get("public_base_url"), "")),
-        expose_astrbot_data=_as_bool(webui_raw.get("expose_astrbot_data"), True),
+        expose_astrbot_data=_as_bool(webui_raw.get("expose_astrbot_data"), False),
+        allowed_origins=_as_str_list(webui_raw.get("allowed_origins")),
+        readonly_token_ttl=_as_int(
+            webui_raw.get("readonly_token_ttl"), 3600, minimum=60
+        ),
+        share_url_ttl=_as_int(webui_raw.get("share_url_ttl"), 3600, minimum=60),
+        data_token_ttl=_as_int(webui_raw.get("data_token_ttl"), 3600, minimum=60),
     )
     storage = StorageSettings(
-        media_dir_override=_as_str(storage_raw.get("media_dir_override"), "")
+        location_mode=(
+            _as_str(storage_raw.get("location_mode"), "plugin_data")
+            or "plugin_data"
+        ),
     )
     downloader = DownloaderSettings(
-        max_file_size_mb=_as_int(downloader_raw.get("max_file_size_mb"), 50, minimum=1),
+        max_file_size_mb=_as_int(downloader_raw.get("max_file_size_mb"), 500, minimum=1),
         allowed_kinds=_parse_allowed_kinds(downloader_raw.get("allowed_kinds")),
         default_move_local=_as_bool(downloader_raw.get("default_move_local"), True),
     )
@@ -155,7 +209,16 @@ def load_plugin_settings(config: dict[str, Any] | None) -> PluginSettings:
         downloader.allowed_kinds = {"image", "video", "audio"}
 
     astrbot_data_dir = Path(get_astrbot_data_path()).resolve()
-    media_root = _resolve_media_root(storage, astrbot_data_dir)
+    if plugin_data_dir is None:
+        plugin_data_dir = (
+            astrbot_data_dir / "plugin_data" / "astrbot_plugin_media_portal"
+        ).resolve()
+    else:
+        plugin_data_dir = Path(plugin_data_dir).resolve()
+
+    media_root, effective_mode = _resolve_media_root(
+        storage, astrbot_data_dir, plugin_data_dir
+    )
 
     try:
         media_root.mkdir(parents=True, exist_ok=True)
@@ -163,11 +226,17 @@ def load_plugin_settings(config: dict[str, Any] | None) -> PluginSettings:
         logger.error("创建媒体目录失败: %s", exc)
         raise
 
+    logger.info(
+        "[media_portal] 媒体库位置: mode=%s path=%s", effective_mode, media_root
+    )
+
     return PluginSettings(
         webui=webui,
         storage=storage,
         downloader=downloader,
         astrbot_data_dir=astrbot_data_dir,
+        plugin_data_dir=plugin_data_dir,
         media_root=media_root,
+        media_location_mode=effective_mode,
         raw_config=raw_config,
     )

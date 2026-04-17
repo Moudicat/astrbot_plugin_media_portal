@@ -32,9 +32,9 @@ class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
         super().__init__(context)
         self.context = context
-        self.settings = load_plugin_settings(config or {})
         self.plugin_data_dir = Path(str(StarTools.get_data_dir())).resolve()
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        self.settings = load_plugin_settings(config or {}, plugin_data_dir=self.plugin_data_dir)
 
         self.category_manager = CategoryManager(
             categories_file=self.plugin_data_dir / "categories.json",
@@ -100,6 +100,10 @@ class MediaPortalPlugin(Star):
             "session_timeout": self.settings.webui.session_timeout,
             "public_base_url": self.settings.webui.public_base_url,
             "expose_astrbot_data": self.settings.webui.expose_astrbot_data,
+            "allowed_origins": self.settings.webui.allowed_origins,
+            "readonly_token_ttl": self.settings.webui.readonly_token_ttl,
+            "share_url_ttl": self.settings.webui.share_url_ttl,
+            "data_token_ttl": self.settings.webui.data_token_ttl,
         }
         self.webui_server = WebUIServer(
             media_manager=self.media_manager,

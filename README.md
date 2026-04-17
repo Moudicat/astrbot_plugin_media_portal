@@ -1,8 +1,10 @@
-# 🌌 AstrBot Media Portal
-
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<img src="./logo.png" alt="Astrbot Media Portal" width="160" />
+
+# 🌌 Astrbot Media Portal
+
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 ![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 [![Repo](https://img.shields.io/badge/GitHub-Moudicat%2Fastrbot__plugin__media__portal-black)](https://github.com/Moudicat/astrbot_plugin_media_portal)
@@ -14,7 +16,7 @@
 
 ## 📑 目录
 
-- [🌌 AstrBot Media Portal](#-astrbot-media-portal)
+- [🌌 Astrbot Media Portal](#-astrbot-media-portal)
   - [📑 目录](#-目录)
   - [🚀 功能特点](#-功能特点)
   - [📦 安装方式](#-安装方式)
@@ -107,11 +109,27 @@ pip install -r requirements.txt
 - `access_password`：访问密码（留空自动生成）；
 - `session_timeout`：会话超时秒数；
 - `public_base_url`：自定义外部访问地址（如反向代理域名）；
-- `expose_astrbot_data`：是否开放 `/data` 只读浏览。
+- `expose_astrbot_data`：是否开放 `/data` 只读浏览（默认 `false`）；
+- `allowed_origins`：允许跨域来源白名单（留空不开放跨域）；
+- `readonly_token_ttl`：WebUI 媒体预览 token 有效期（秒）；
+- `share_url_ttl`：`get_media_url` / 复制链接生成 token 的有效期（秒）；
+- `data_token_ttl`：Data 文件直链 token 有效期（秒）。
 
 ### `storage`
 
-- `media_dir_override`：覆盖媒体目录，留空默认 `{astrbot_data}/media`。
+- `location_mode`：媒体库存储位置，可选：
+  - `plugin_data`（**默认**）→ `data/plugin_data/astrbot_plugin_media_portal/media`，符合 AstrBot [官方插件规范](https://docs.astrbot.app/dev/star/plugin.html)，便于备份、迁移与卸载清理。
+  - `astrbot_data` → `data/media`
+
+#### 🚚 在两种模式间切换
+
+SQLite 中保存的是相对媒体根目录的路径，**切换模式本身不需要改库**，只需要搬一次文件：
+
+1. 停用插件或停机 AstrBot；
+2. 将旧目录下的所有内容整体移动到新目录（例如 `data/media/*` → `data/plugin_data/astrbot_plugin_media_portal/media/`）；
+3. 将 `storage.location_mode` 改为目标模式；
+4. 重启插件；
+5. 建议执行 `/media scan` 校验一次索引。
 
 ### `downloader`
 
@@ -132,7 +150,8 @@ pip install -r requirements.txt
 ### 访问控制
 
 - API 使用 Bearer Token；
-- 媒体流使用只读 token（便于 `<img>/<video>/<audio>` 直接访问）。
+- 媒体流使用带签名、带过期时间的只读 token；
+- Data 文件访问使用独立 token（与媒体 token 分离）。
 
 ## ❓ 常见问题
 
@@ -153,7 +172,7 @@ A：可以，只读模式。可通过 `webui.expose_astrbot_data` 控制开关�
 
 1. 生产环境务必设置固定强密码，不要长期使用随机密码；
 2. 若开放公网访问，请配合反向代理与 HTTPS；
-3. 不要泄露 `get_media_url` 返回的只读 token 链接；
+3. 分享链接已带过期时间，但仍建议最小化转发范围并定期轮换密码；
 4. 建议限制上传/下载来源并定期清理历史媒体。
 
 ## 📚 开发参考

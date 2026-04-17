@@ -1,8 +1,9 @@
+import { Icon } from "./Icon.js";
 import { MediaCard } from "./MediaCard.js";
 
 export const MediaGrid = {
   name: "MediaGrid",
-  components: { MediaCard },
+  components: { Icon, MediaCard },
   props: {
     items: { type: Array, default: () => [] },
     loading: { type: Boolean, default: false },
@@ -11,7 +12,11 @@ export const MediaGrid = {
     kind: { type: String, default: "" },
     page: { type: Number, default: 1 },
     totalPages: { type: Number, default: 0 },
+    totalCount: { type: Number, default: 0 },
     readonlyToken: { type: String, default: "" },
+    stats: { type: Object, default: () => ({}) },
+    activeCategory: { type: String, default: "" },
+    categories: { type: Array, default: () => [] },
   },
   emits: [
     "search",
@@ -20,19 +25,81 @@ export const MediaGrid = {
     "preview",
     "detail",
     "open-upload",
-    "open-save-url",
     "page-change",
     "clear-selection",
     "batch-delete",
+    "copy-link",
+    "select-category",
   ],
   data() {
     return {
       localQuery: this.query,
+      statsCollapsed: false,
     };
   },
   watch: {
     query(value) {
       this.localQuery = value;
+    },
+  },
+  computed: {
+    statCards() {
+      const categories = this.stats?.categories || [];
+      const totalSize = this.stats?.total_size_human || this.stats?.total_size || "-";
+      const kindCount = (target) =>
+        (this.stats?.by_kind && this.stats.by_kind[target]) || 0;
+      return [
+        {
+          key: "total",
+          label: "媒体总数",
+          value: this.stats?.total_count ?? this.totalCount ?? 0,
+          icon: "library",
+          tone: "primary",
+        },
+        {
+          key: "image",
+          label: "图片",
+          value: kindCount("image"),
+          icon: "image",
+          tone: "violet",
+        },
+        {
+          key: "video",
+          label: "视频",
+          value: kindCount("video"),
+          icon: "film",
+          tone: "info",
+        },
+        {
+          key: "audio",
+          label: "音频",
+          value: kindCount("audio"),
+          icon: "music",
+          tone: "accent",
+        },
+        {
+          key: "cat",
+          label: "分类",
+          value: categories.length,
+          icon: "folder",
+          tone: "warning",
+        },
+        {
+          key: "size",
+          label: "占用空间",
+          value: totalSize,
+          icon: "database",
+          tone: "primary",
+        },
+      ];
+    },
+    kindTabs() {
+      return [
+        { id: "", label: "全部", icon: "layers" },
+        { id: "image", label: "图片", icon: "image" },
+        { id: "video", label: "视频", icon: "film" },
+        { id: "audio", label: "音频", icon: "music" },
+      ];
     },
   },
   methods: {
@@ -44,33 +111,127 @@ export const MediaGrid = {
     },
   },
   template: `
-    <section class="media-grid-wrap">
-      <header class="toolbar">
-        <div class="toolbar-search">
-          <input
-            v-model="localQuery"
-            @keyup.enter="submitSearch"
-            placeholder="搜索文件名/描述"
-          />
-          <button @click="submitSearch">搜索</button>
+    <section style="display: flex; flex-direction: column; gap: 14px">
+      <div
+        class="panel stat-grid"
+        :class="{ 'stat-grid-collapsed': statsCollapsed }"
+      >
+        <div
+          class="stat-card"
+          v-for="card in statCards"
+          :key="card.key"
+          :data-tone="card.tone"
+        >
+          <div class="avatar"><Icon :name="card.icon" :size="18" /></div>
+          <div class="meta">
+            <small>{{ card.label }}</small>
+            <strong>{{ card.value }}</strong>
+          </div>
         </div>
-        <div class="toolbar-actions">
-          <button @click="$emit('open-upload')">上传文件</button>
-          <button @click="$emit('open-save-url')">保存 URL</button>
-          <button @click="$emit('clear-selection')" :disabled="!selectedIds.length">清空选择</button>
-          <button @click="$emit('batch-delete')" :disabled="!selectedIds.length">批量删除</button>
-        </div>
-      </header>
-
-      <div class="kind-tabs">
-        <button :class="{ active: kind === '' }" @click="pickKind('')">全部</button>
-        <button :class="{ active: kind === 'image' }" @click="pickKind('image')">图片</button>
-        <button :class="{ active: kind === 'video' }" @click="pickKind('video')">视频</button>
-        <button :class="{ active: kind === 'audio' }" @click="pickKind('audio')">音频</button>
+        <button
+          class="icon sm stat-toggle mobile-only"
+          @click="statsCollapsed = !statsCollapsed"
+          :title="statsCollapsed ? '展开统计' : '收起统计'"
+        >
+          <Icon :name="statsCollapsed ? 'chevron-down' : 'chevron-up'" :size="14" />
+        </button>
       </div>
 
-      <div v-if="loading" class="loading">加载中...</div>
-      <div v-else-if="!items.length" class="empty">暂无媒体，试试上传或切换分类。</div>
+      <div class="panel" style="display: flex; flex-direction: column; gap: 10px">
+        <div class="toolbar">
+          <div class="toolbar-search">
+            <div class="input-wrap">
+              <span class="icon-slot"><Icon name="search" :size="16" /></span>
+              <input
+                v-model="localQuery"
+                @keyup.enter="submitSearch"
+                placeholder="搜索文件名 / 描述 / 标签，回车确认"
+              />
+            </div>
+          </div>
+          <div class="toolbar-actions">
+            <button class="accent" @click="$emit('open-upload')" title="上传文件 / URL 保存">
+              <Icon name="upload" :size="15" />
+              <span class="hide-mobile">上传</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="kind-tabs">
+          <button
+            v-for="tab in kindTabs"
+            :key="tab.id"
+            class="chip"
+            :class="{ active: kind === tab.id }"
+            @click="pickKind(tab.id)"
+          >
+            <Icon :name="tab.icon" :size="13" />
+            {{ tab.label }}
+          </button>
+          <span v-if="activeCategory" class="chip active hide-mobile" style="margin-left: auto">
+            <Icon name="folder" :size="13" />
+            {{ activeCategory }}
+          </span>
+        </div>
+
+        <div v-if="categories.length" class="category-tabs mobile-only">
+          <button
+            class="chip"
+            :class="{ active: activeCategory === '' }"
+            @click="$emit('select-category', '')"
+          >
+            <Icon name="layers" :size="13" />
+            全部
+          </button>
+          <button
+            v-for="cat in categories"
+            :key="cat.category"
+            class="chip"
+            :class="{ active: activeCategory === cat.category }"
+            @click="$emit('select-category', cat.category)"
+            :title="cat.description || cat.category"
+          >
+            <Icon name="folder" :size="13" />
+            {{ cat.category }}
+            <span class="chip-count">{{ cat.count }}</span>
+          </button>
+        </div>
+
+        <div v-if="selectedIds.length" class="selection-bar">
+          <span>
+            <Icon name="check-check" :size="14" style="vertical-align: -2px" />
+            已选择 <strong>{{ selectedIds.length }}</strong> 个媒体
+          </span>
+          <div class="actions">
+            <button class="sm" @click="$emit('clear-selection')">
+              <Icon name="x" :size="14" /> 取消选择
+            </button>
+            <button class="danger sm" @click="$emit('batch-delete')">
+              <Icon name="trash-2" :size="14" /> 批量删除
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="loading" class="skeleton-grid">
+        <div v-for="n in 8" :key="n" class="skeleton-card">
+          <div class="sk-media"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </div>
+
+      <div v-else-if="!items.length" class="empty panel">
+        <div class="illus"><Icon name="package-open" :size="36" /></div>
+        <strong>这里还没有媒体</strong>
+        <span>试试上传一个文件，或在上传弹窗中切换 URL 保存一个远程媒体。</span>
+        <div style="display: flex; gap: 8px; margin-top: 6px">
+          <button class="primary" @click="$emit('open-upload')">
+            <Icon name="upload" :size="15" /> 上传 / URL 保存
+          </button>
+        </div>
+      </div>
+
       <div v-else class="media-grid">
         <MediaCard
           v-for="item in items"
@@ -81,13 +242,18 @@ export const MediaGrid = {
           @toggle-select="$emit('toggle-select', $event)"
           @preview="$emit('preview', $event)"
           @detail="$emit('detail', $event)"
+          @copy-link="$emit('copy-link', $event)"
         />
       </div>
 
       <footer class="pager" v-if="totalPages > 0">
-        <button :disabled="page <= 1" @click="$emit('page-change', page - 1)">上一页</button>
-        <span>第 {{ page }} / {{ totalPages }} 页</span>
-        <button :disabled="page >= totalPages" @click="$emit('page-change', page + 1)">下一页</button>
+        <button class="icon sm" :disabled="page <= 1" @click="$emit('page-change', page - 1)">
+          <Icon name="chevron-left" :size="15" />
+        </button>
+        <span>第 <strong>{{ page }}</strong> / {{ totalPages }} 页 · 共 {{ totalCount }} 条</span>
+        <button class="icon sm" :disabled="page >= totalPages" @click="$emit('page-change', page + 1)">
+          <Icon name="chevron-right" :size="15" />
+        </button>
       </footer>
     </section>
   `,

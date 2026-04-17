@@ -117,6 +117,25 @@ class CategoryManager:
             if changed:
                 self._save()
 
+    def prune_missing_folders(self, *, protected: set[str] | None = None) -> list[str]:
+        """移除本地文件夹已不存在的分类元数据（默认保护 default）。
+
+        典型场景：用户在文件系统手动删除或重命名了某个分类目录后，
+        原分类的描述条目仍残留在 ``categories.json`` 中，通过本方法可安全清理。
+        """
+        keep = {"default"} if protected is None else set(protected)
+        removed: list[str] = []
+        with self._lock:
+            for key in list(self._descriptions.keys()):
+                if key in keep:
+                    continue
+                if not (self.media_root / key).exists():
+                    self._descriptions.pop(key, None)
+                    removed.append(key)
+            if removed:
+                self._save()
+        return removed
+
     def export_with_counts(self, counts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         with self._lock:
             categories = set(self._descriptions.keys()) | set(counts.keys())

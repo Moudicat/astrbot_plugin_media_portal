@@ -668,7 +668,7 @@ class MediaManager:
         return {"category": normalized, "deleted_files": deleted_files, "deleted_rows": len(rows)}
 
     async def ensure_scanned(self) -> dict[str, int]:
-        """扫描媒体目录并修复索引。"""
+        """扫描媒体目录并修复索引，同步清理孤儿分类元数据。"""
         self.category_manager.sync_with_filesystem()
         conn = await self._ensure_conn()
         cursor = await conn.execute("SELECT id, rel_path FROM media")
@@ -715,7 +715,59 @@ class MediaManager:
             removed += 1
         if removed:
             await conn.commit()
-        return {"indexed": indexed, "removed": removed, "skipped": skipped}
+        pruned_categories = self.category_manager.prune_missing_folders()
+        return {
+            "indexed": indexed,
+            "removed": removed,
+            "skipped": skipped,
+            "pruned_categories": len(pruned_categories),
+        }
+
+    async def prune_empty_categories(
+        self, *, protected: set[str] | None = None
+    ) -> dict[str, Any]:
+        """移除所有 0 媒体、0 文件的空分类（以及文件夹已缺失的孤儿元数据）。
+
+        - 默认保护 ``default``，不会被清理。
+        - 对仍有媒体记录或文件夹非空的分类 **一律不触碰**，确保数据安全。
+        """
+        keep = {"default"} if protected is None else set(protected)
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT category, COUNT(*) AS cnt FROM media GROUP BY category"
+        )
+        cat_rows = await cursor.fetchall()
+        live_counts = {str(row["category"]): int(row["cnt"]) for row in cat_rows}
+
+        removed: list[str] = []
+        folder_cleaned: list[str] = []
+
+        for cat in self.category_manager.list_categories():
+            if cat in keep:
+                continue
+            db_count = live_counts.get(cat, 0)
+            folder = self.media_root / cat
+            folder_missing = not folder.exists()
+            folder_empty = folder_missing or (
+                folder.is_dir() and not any(folder.iterdir())
+            )
+            if db_count > 0 or not folder_empty:
+                continue
+            if folder.exists():
+                try:
+                    folder.rmdir()
+                    folder_cleaned.append(cat)
+                except Exception as exc:
+                    logger.warning("清理空分类目录失败 %s: %s", cat, exc)
+                    continue
+            if self.category_manager.delete_category(cat):
+                removed.append(cat)
+
+        return {
+            "removed": removed,
+            "removed_count": len(removed),
+            "folder_cleaned": folder_cleaned,
+        }
 
     async def get_stats(self) -> dict[str, Any]:
         conn = await self._ensure_conn()

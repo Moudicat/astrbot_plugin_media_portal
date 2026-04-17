@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import mimetypes
 import secrets
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import aiofiles
 import aiohttp
@@ -49,50 +52,127 @@ class MediaDownloader:
         path = Path(src).expanduser().resolve()
         return MediaSource(source_type="local", value=str(path), filename_hint=path.name)
 
+    @staticmethod
+    def _is_public_ip(ip_text: str) -> bool:
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except Exception:
+            return False
+        return not (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        )
+
+    async def _assert_public_host(self, hostname: str) -> None:
+        text = str(hostname or "").strip().lower()
+        if not text:
+            raise ValueError("URL 缺少有效主机名。")
+        if text in {"localhost", "localhost.localdomain"}:
+            raise ValueError("禁止访问本地或内网地址。")
+
+        # 直接 IP
+        if self._is_public_ip(text):
+            return
+        try:
+            ipaddress.ip_address(text)
+            raise ValueError("禁止访问本地或内网地址。")
+        except ValueError:
+            pass
+
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(
+                text,
+                None,
+                family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM,
+            )
+        except Exception as exc:
+            raise ValueError(f"无法解析目标地址: {text}") from exc
+
+        if not infos:
+            raise ValueError(f"无法解析目标地址: {text}")
+        for info in infos:
+            sockaddr = info[4]
+            ip_text = str(sockaddr[0]) if isinstance(sockaddr, tuple) and sockaddr else ""
+            if not self._is_public_ip(ip_text):
+                raise ValueError("禁止访问本地或内网地址。")
+
+    async def _assert_safe_url(self, raw_url: str) -> None:
+        parsed = urlparse(str(raw_url or "").strip())
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"}:
+            raise ValueError("仅支持 http/https URL。")
+        if not parsed.hostname:
+            raise ValueError("URL 缺少主机名。")
+        await self._assert_public_host(parsed.hostname)
+
     async def download_to_temp(
         self, url: str, filename_hint: str = ""
     ) -> DownloadedFile:
         timeout = aiohttp.ClientTimeout(total=180)
         headers = {"User-Agent": "astrbot-media-portal/1.0"}
+        current_url = str(url or "").strip()
+        if not current_url:
+            raise ValueError("URL 不能为空。")
 
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                if resp.status >= 400:
-                    raise RuntimeError(f"下载失败，HTTP {resp.status}")
+            for _ in range(6):
+                await self._assert_safe_url(current_url)
+                async with session.get(current_url, allow_redirects=False) as resp:
+                    if resp.status in {301, 302, 303, 307, 308}:
+                        location = str(resp.headers.get("Location", "") or "").strip()
+                        if not location:
+                            raise RuntimeError("下载重定向缺少 Location。")
+                        current_url = urljoin(current_url, location)
+                        continue
 
-                declared = int(resp.headers.get("Content-Length", "0") or 0)
-                if declared > self.max_file_size:
-                    raise ValueError("文件过大，超过限制。")
+                    if resp.status >= 400:
+                        raise RuntimeError(f"下载失败，HTTP {resp.status}")
 
-                header_name = self._filename_from_headers(resp.headers.get("Content-Disposition", ""))
-                guessed_name = (
-                    filename_hint
-                    or header_name
-                    or guess_filename_from_url(url, default="download")
-                )
-                clean_name = sanitize_filename(guessed_name, fallback="download")
-                content_type = str(resp.headers.get("Content-Type", "")).split(";")[0].strip()
-                suffix = Path(clean_name).suffix
-                if not suffix and content_type:
-                    suffix = mimetypes.guess_extension(content_type) or ""
+                    declared = int(resp.headers.get("Content-Length", "0") or 0)
+                    if declared > self.max_file_size:
+                        raise ValueError("文件过大，超过限制。")
 
-                temp_name = f"download_{secrets.token_hex(8)}{suffix}"
-                temp_path = unique_path(self.temp_dir / temp_name)
+                    header_name = self._filename_from_headers(
+                        resp.headers.get("Content-Disposition", "")
+                    )
+                    guessed_name = (
+                        filename_hint
+                        or header_name
+                        or guess_filename_from_url(current_url, default="download")
+                    )
+                    clean_name = sanitize_filename(guessed_name, fallback="download")
+                    content_type = str(resp.headers.get("Content-Type", "")).split(";")[0].strip()
+                    suffix = Path(clean_name).suffix
+                    if not suffix and content_type:
+                        suffix = mimetypes.guess_extension(content_type) or ""
 
-                downloaded = 0
-                async with aiofiles.open(temp_path, "wb") as fp:
-                    async for chunk in resp.content.iter_chunked(1024 * 64):
-                        downloaded += len(chunk)
-                        if downloaded > self.max_file_size:
-                            await fp.close()
-                            try:
-                                temp_path.unlink(missing_ok=True)
-                            except Exception:
-                                pass
-                            raise ValueError("文件过大，超过限制。")
-                        await fp.write(chunk)
+                    temp_name = f"download_{secrets.token_hex(8)}{suffix}"
+                    temp_path = unique_path(self.temp_dir / temp_name)
 
-        return DownloadedFile(path=temp_path, filename=clean_name, content_type=content_type)
+                    downloaded = 0
+                    async with aiofiles.open(temp_path, "wb") as fp:
+                        async for chunk in resp.content.iter_chunked(1024 * 64):
+                            downloaded += len(chunk)
+                            if downloaded > self.max_file_size:
+                                await fp.close()
+                                try:
+                                    temp_path.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                                raise ValueError("文件过大，超过限制。")
+                            await fp.write(chunk)
+                    return DownloadedFile(
+                        path=temp_path,
+                        filename=clean_name,
+                        content_type=content_type,
+                    )
+        raise RuntimeError("重定向次数过多，已拒绝下载。")
 
     async def extract_sources_from_event(self, event: Any) -> list[MediaSource]:
         components = list(getattr(getattr(event, "message_obj", None), "message", []) or [])
