@@ -549,8 +549,6 @@ class MediaPortalPlugin(Star):
     ) -> str:
         """向当前会话发送媒体库中的媒体 （不是通用文件发送）
 
-        仅接受媒体 ID 或关键词；拒绝本地路径与 URL。
-
         Args:
             media_id_or_query(string): 可传媒体 ID 或搜索关键词，不允许本地路径/URL。
         """

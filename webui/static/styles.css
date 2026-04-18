@@ -1463,7 +1463,6 @@ button.block {
   z-index: var(--z-drawer);
   display: flex;
   justify-content: flex-end;
-  animation: fade-in var(--transition-base);
 }
 
 .drawer {
@@ -1473,7 +1472,6 @@ button.block {
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-lg);
-  animation: slide-in var(--transition-slow);
 }
 
 .drawer header {
@@ -1596,7 +1594,6 @@ button.block {
   place-items: center;
   padding: 16px;
   z-index: var(--z-overlay);
-  animation: fade-in var(--transition-base);
 }
 
 .modal {
@@ -1611,7 +1608,6 @@ button.block {
   flex-direction: column;
   gap: 14px;
   overflow: hidden;
-  animation: pop-in var(--transition-slow);
 }
 
 .modal header {
@@ -1746,7 +1742,6 @@ button.block {
   display: flex;
   flex-direction: column;
   z-index: var(--z-overlay);
-  animation: fade-in var(--transition-base);
 }
 
 .player-topbar {
@@ -1878,7 +1873,6 @@ button.player-nav:disabled,
   grid-template-columns: auto minmax(120px, 1fr) auto;
   gap: 12px;
   align-items: center;
-  animation: slide-up var(--transition-slow);
 }
 
 .audio-dock .avatar {
@@ -2667,6 +2661,79 @@ button.player-nav:disabled,
   font-size: 13px;
 }
 
+.modal-enter-active,
+.modal-leave-active {
+  transition: opacity var(--transition-base);
+}
+
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+
+.modal-enter-active .modal,
+.modal-leave-active .modal {
+  transition: transform var(--transition-base), opacity var(--transition-base);
+}
+
+.modal-enter-from .modal,
+.modal-leave-to .modal {
+  opacity: 0;
+  transform: translateY(14px) scale(0.985);
+}
+
+/* Fullscreen preview uses the same transition name, so handle it explicitly. */
+.modal-enter-active.player-mask,
+.modal-leave-active.player-mask {
+  transition: opacity var(--transition-base), backdrop-filter var(--transition-base);
+}
+
+.modal-enter-from.player-mask,
+.modal-leave-to.player-mask {
+  opacity: 0;
+  backdrop-filter: blur(0);
+}
+
+.modal-enter-active.player-mask .player-topbar,
+.modal-leave-active.player-mask .player-topbar,
+.modal-enter-active.player-mask .player-body,
+.modal-leave-active.player-mask .player-body {
+  transition: transform var(--transition-base), opacity var(--transition-base);
+}
+
+.modal-enter-from.player-mask .player-topbar,
+.modal-leave-to.player-mask .player-topbar {
+  opacity: 0;
+  transform: translateY(-12px);
+}
+
+.modal-enter-from.player-mask .player-body,
+.modal-leave-to.player-mask .player-body {
+  opacity: 0;
+  transform: translateY(12px) scale(0.99);
+}
+
+.drawer-enter-active,
+.drawer-leave-active {
+  transition: opacity var(--transition-base);
+}
+
+.drawer-enter-from,
+.drawer-leave-to {
+  opacity: 0;
+}
+
+.drawer-enter-active .drawer,
+.drawer-leave-active .drawer {
+  transition: transform var(--transition-base), opacity var(--transition-base);
+}
+
+.drawer-enter-from .drawer,
+.drawer-leave-to .drawer {
+  opacity: 0;
+  transform: translateX(28px);
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity var(--transition-fast);
@@ -3040,7 +3107,6 @@ button.player-nav:disabled,
     border-top-right-radius: var(--radius-xl);
     border-left: none;
     border-top: 1px solid var(--border);
-    animation: slide-up var(--transition-slow);
   }
 
   .drawer header {
@@ -3069,6 +3135,11 @@ button.player-nav:disabled,
     height: 100%;
     max-height: 46vh;
     object-fit: contain;
+  }
+
+  .drawer-enter-from .drawer,
+  .drawer-leave-to .drawer {
+    transform: translateY(24px);
   }
 
   .drawer-meta {

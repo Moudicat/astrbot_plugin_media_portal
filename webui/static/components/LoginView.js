@@ -67,12 +67,6 @@ export const LoginView = {
             <span>{{ error }}</span>
           </p>
 
-          <div class="login-hint">
-            <Icon name="info" :size="13" />
-            若未设置密码，随机密码会在 AstrBot 控制台日志中打印。首次使用可通过指令
-            <code class="mono">/media password set &lt;密码&gt;</code> 修改。
-          </div>
-
           <div class="login-meta">
             <button type="button" class="ghost sm" @click="$emit('toggle-theme')">
               <Icon :name="theme === 'dark' ? 'sun' : 'moon'" :size="14" />

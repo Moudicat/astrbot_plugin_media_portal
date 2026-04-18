@@ -38,7 +38,7 @@
         "description": "自定义公开访问地址",
         "type": "string",
         "default": "",
-        "hint": "例如 https://media.example.com。留空时自动使用 host:port。"
+        "hint": "例如 https://media.example.com 或 http://192.168.1.2:7003 留空时自动使用默认的host:port。"
       },
       "expose_astrbot_data": {
         "description": "暴露 AstrBot 数据目录（只读）",

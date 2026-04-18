@@ -47,12 +47,25 @@
 
 ## 🖼️ 截图
 
+<details>
+<summary><strong>后台管理界面</strong></summary>
+<br />
 <img width="1274" height="981" alt="085251bc35b6c5aa4d7c2304d81839e6" src="https://github.com/user-attachments/assets/a9184815-114b-458b-be5c-8cb32c634e95" />
+</details>
 
-
+<details>
+<summary><strong>添加媒体文件进媒体库</strong></summary>
+<br />
 <img width="735" height="90" alt="image" src="https://github.com/user-attachments/assets/9d952ca5-f216-4491-aed1-4158bf87f259" />
+<br />
 <img width="904" height="535" alt="image" src="https://github.com/user-attachments/assets/f4d2faef-6b78-4cb2-9d37-212b56a77c1d" />
+</details>
 
+<details>
+<summary><strong>从媒体库读取/发送</strong></summary>
+<br />
+https://github.com/user-attachments/assets/2e043acb-744f-48ce-a48e-4eeb7b8b63b7
+</details>
 
 ## 📦 安装方式
 
