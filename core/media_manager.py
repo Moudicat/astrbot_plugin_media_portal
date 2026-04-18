@@ -661,7 +661,17 @@ class MediaManager:
         category_dir = self.media_root / normalized
         if category_dir.exists():
             try:
-                shutil.rmtree(category_dir)
+                if remove_files:
+                    shutil.rmtree(category_dir)
+                else:
+                    # remove_files=False 时只允许清理空目录，避免误伤用户仍想保留的文件
+                    try:
+                        category_dir.rmdir()
+                    except OSError:
+                        logger.info(
+                            "分类目录 %s 非空且 remove_files=False，保留物理文件。",
+                            category_dir,
+                        )
             except Exception as exc:
                 logger.warning("删除分类目录失败: %s", exc)
         self.category_manager.delete_category(normalized)

@@ -28,6 +28,7 @@ export const MediaGrid = {
     "page-change",
     "clear-selection",
     "batch-delete",
+    "batch-change-category",
     "copy-link",
     "select-category",
   ],
@@ -230,6 +231,9 @@ export const MediaGrid = {
           <div class="actions">
             <button class="sm" @click="$emit('clear-selection')">
               <Icon name="x" :size="14" /> 取消选择
+            </button>
+            <button class="sm" @click="$emit('batch-change-category')" title="批量移动到分类">
+              <Icon name="folder-input" :size="14" /> 批量分类
             </button>
             <button class="danger sm" @click="$emit('batch-delete')">
               <Icon name="trash-2" :size="14" /> 批量删除

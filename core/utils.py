@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import mimetypes
+import os
 import re
 import secrets
 import time
@@ -143,6 +145,75 @@ def generate_password(length: int = 16) -> str:
         return secrets.token_urlsafe(8)[:length]
     raw = secrets.token_urlsafe(max(12, length))
     return raw[:length]
+
+
+# Docker 默认 bridge 在 172.17.0.0/16；用户自定义 bridge 通常在 172.18.0.0/16 - 172.31.0.0/16。
+# 172.16.0.0/12 整体属于私有地址，但企业局域网极少使用 172.17+，这里按经验判定为“疑似容器内部 IP”。
+# 额外覆盖 K8s 常见的 pod/service 段 10.42.0.0/16、10.43.0.0/16（k3s）等。这里只匹配最典型的 docker bridge。
+
+
+def is_loopback_ip(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(ip).strip()).is_loopback
+    except ValueError:
+        return False
+
+
+def is_link_local_ip(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(str(ip).strip()).is_link_local
+    except ValueError:
+        return False
+
+
+def is_docker_bridge_ip(ip: str) -> bool:
+    """根据经验判断 IP 是否位于典型 Docker bridge 子网。
+
+    判定规则：IPv4 且第二段在 17-31 之间（即 172.17.x.x ~ 172.31.x.x）。
+    保留 172.16.x.x 给企业常用 LAN，避免误伤。
+    """
+    try:
+        addr = ipaddress.ip_address(str(ip).strip())
+    except ValueError:
+        return False
+    if not isinstance(addr, ipaddress.IPv4Address):
+        return False
+    octets = str(addr).split(".")
+    if len(octets) != 4 or octets[0] != "172":
+        return False
+    try:
+        second = int(octets[1])
+    except ValueError:
+        return False
+    return 17 <= second <= 31
+
+
+def _cgroup_has_container_marker() -> bool:
+    for candidate in ("/proc/1/cgroup", "/proc/self/cgroup", "/proc/1/mountinfo"):
+        try:
+            with open(candidate, "rb") as fp:
+                blob = fp.read(32768)
+        except OSError:
+            continue
+        text = blob.decode("utf-8", errors="ignore").lower()
+        for marker in ("docker", "kubepods", "containerd", "crio", "podman", "lxc"):
+            if marker in text:
+                return True
+    return False
+
+
+def is_container_environment() -> bool:
+    """粗略检测当前进程是否运行在容器（Docker/Podman/K8s 等）中。"""
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return True
+    for env_name in (
+        "KUBERNETES_SERVICE_HOST",
+        "DOCKER_CONTAINER",
+        "container",
+    ):
+        if os.environ.get(env_name):
+            return True
+    return _cgroup_has_container_marker()
 
 
 def format_size(size: int) -> str:

@@ -26,7 +26,7 @@ from .webui import WebUIServer
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.1.2",
+    "0.1.3",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -130,19 +130,36 @@ class MediaPortalPlugin(Star):
         lines.append(f"访问密码：{self.webui_server.access_password}")
         if self.webui_server.password_generated:
             lines.append("当前密码为系统随机生成，建议在 WebUI 设置页或插件配置中固定一个强密码。")
+        notes = self.webui_server.get_environment_notes()
+        if notes:
+            lines.append("部署提示：")
+            for note in notes:
+                lines.append(f"- {note}")
         return "\n".join(lines)
 
     @staticmethod
     def _compact_record(record) -> str:
         return f"id={record.id} 分类={record.category} 文件={record.filename} 类型={record.kind}"
 
-    def _build_media_component(self, record) -> Any:
+    # WebChat 前端目前只渲染 Plain/Image/Record/File 组件，Video 会被其 _send
+    # 静默丢弃，从而表现为工具“已调用但什么都没发”。
+    _WEBCHAT_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"video"})
+
+    def _build_media_component(self, record, platform_name: str = "") -> Any:
         file_path = Path(record.abs_path)
-        if record.kind == "image" and hasattr(Comp, "Image"):
+        kind = record.kind
+        platform = str(platform_name or "").strip().lower()
+        if (
+            platform == "webchat"
+            and kind in self._WEBCHAT_UNSUPPORTED_KINDS
+            and hasattr(Comp, "File")
+        ):
+            return Comp.File(file=str(file_path), name=file_path.name)
+        if kind == "image" and hasattr(Comp, "Image"):
             return Comp.Image.fromFileSystem(str(file_path))
-        if record.kind == "video" and hasattr(Comp, "Video"):
+        if kind == "video" and hasattr(Comp, "Video"):
             return Comp.Video.fromFileSystem(str(file_path))
-        if record.kind == "audio" and hasattr(Comp, "Record"):
+        if kind == "audio" and hasattr(Comp, "Record"):
             return Comp.Record.fromFileSystem(str(file_path))
         if hasattr(Comp, "File"):
             return Comp.File(file=str(file_path), name=file_path.name)
@@ -496,8 +513,13 @@ class MediaPortalPlugin(Star):
             return "媒体文件已丢失，建议执行 /media scan 修复索引。"
 
         share_url = self.webui_server.build_media_url(record) if self.webui_server else ""
+        platform_name = ""
         try:
-            component = self._build_media_component(record)
+            platform_name = str(event.get_platform_name() or "")
+        except Exception:
+            platform_name = ""
+        try:
+            component = self._build_media_component(record, platform_name=platform_name)
             chain = MessageChain([component])
             try:
                 await event.send(chain)

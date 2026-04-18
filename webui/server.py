@@ -123,6 +123,10 @@ from ..core.media_manager import MediaManager, MediaRecord
 from ..core.utils import (
     detect_mime_and_kind,
     generate_password,
+    is_container_environment,
+    is_docker_bridge_ip,
+    is_link_local_ip,
+    is_loopback_ip,
     safe_join,
     slugify_category,
     unique_path,
@@ -238,6 +242,8 @@ class WebUIServer:
         for _ in range(50):
             if getattr(self._server, "started", False):
                 logger.info("Media Portal WebUI 已启动: %s", self.get_preferred_base_url())
+                for note in self.get_environment_notes():
+                    logger.warning("Media Portal WebUI 部署提示: %s", note)
                 return
             if self._server_task.done():
                 error = self._server_task.exception()
@@ -274,7 +280,28 @@ class WebUIServer:
             logger.info("Media Portal WebUI 密码已更新（由配置指定）。")
         return self._access_password
 
-    def get_access_urls(self) -> list[str]:
+    def _classify_access_ips(self) -> dict[str, list[str]]:
+        """扫描本机网卡 IP 并按用途分组。"""
+        lan_ips: list[str] = []
+        container_ips: list[str] = []
+        for ip in get_local_ip_addresses():
+            if not ip:
+                continue
+            if is_loopback_ip(ip) or is_link_local_ip(ip):
+                continue
+            if is_docker_bridge_ip(ip):
+                container_ips.append(ip)
+            else:
+                lan_ips.append(ip)
+        return {"lan": lan_ips, "container": container_ips}
+
+    def get_access_urls(self, include_container: bool | None = None) -> list[str]:
+        """构造 WebUI 访问地址列表。
+
+        - 始终包含 localhost / 127.0.0.1，便于宿主机直接访问。
+        - 默认过滤掉疑似 Docker 网桥 IP（172.17-172.31），除非没有其它可用 IP。
+        - 配置了 ``public_base_url`` 时把它放在最前面。
+        """
         urls: list[str] = []
         if self.public_base_url:
             urls.append(self.public_base_url)
@@ -284,10 +311,18 @@ class WebUIServer:
         if self.host not in {"0.0.0.0", "::"} and self.host not in {"127.0.0.1", "localhost"}:
             urls.append(f"http://{self.host}:{self.port}")
         else:
-            for ip in get_local_ip_addresses():
-                if not ip or ip.startswith("127."):
-                    continue
+            groups = self._classify_access_ips()
+            for ip in groups["lan"]:
                 urls.append(f"http://{ip}:{self.port}")
+            # 仅在没有普通局域网 IP，或调用方显式要求时，才输出疑似容器内部 IP。
+            should_include_container = (
+                include_container
+                if include_container is not None
+                else not groups["lan"]
+            )
+            if should_include_container:
+                for ip in groups["container"]:
+                    urls.append(f"http://{ip}:{self.port}")
 
         dedup: list[str] = []
         seen: set[str] = set()
@@ -298,13 +333,37 @@ class WebUIServer:
             dedup.append(url)
         return dedup
 
+    def get_environment_notes(self) -> list[str]:
+        """返回与部署环境相关的人类可读提示。"""
+        notes: list[str] = []
+        groups = self._classify_access_ips()
+        in_container = is_container_environment()
+        has_container_ip = bool(groups["container"])
+        has_lan_ip = bool(groups["lan"])
+        if not self.public_base_url and (in_container or (has_container_ip and not has_lan_ip)):
+            notes.append(
+                "检测到当前进程可能运行在容器（Docker / K8s 等）中，"
+                "局域网/外网通常无法直接访问容器内部 IP（如 172.17.x.x）。"
+            )
+            if has_container_ip:
+                container_preview = ", ".join(groups["container"][:3])
+                notes.append(f"已忽略疑似容器内部地址: {container_preview}。")
+            notes.append(
+                "建议在插件配置的 webui.public_base_url 中填写可从外部访问的地址"
+                "（例如 http://<宿主机IP>:<映射端口> 或反向代理域名），"
+                "以便 URL/分享链接正确指向公开入口。"
+            )
+        return notes
+
     def get_preferred_base_url(self) -> str:
         if self.public_base_url:
             return self.public_base_url
         if self.host in {"0.0.0.0", "::"}:
-            for ip in get_local_ip_addresses():
-                if ip and not ip.startswith("127."):
-                    return f"http://{ip}:{self.port}"
+            groups = self._classify_access_ips()
+            if groups["lan"]:
+                return f"http://{groups['lan'][0]}:{self.port}"
+            if groups["container"]:
+                return f"http://{groups['container'][0]}:{self.port}"
             return f"http://localhost:{self.port}"
         if self.host in {"127.0.0.1", "localhost"}:
             return f"http://localhost:{self.port}"
@@ -579,7 +638,10 @@ class WebUIServer:
                     status.HTTP_429_TOO_MANY_REQUESTS,
                     detail="尝试过于频繁，请稍后再试",
                 )
-            if password != self._access_password:
+            if not hmac.compare_digest(
+                password.encode("utf-8"),
+                self._access_password.encode("utf-8"),
+            ):
                 await self._record_failed_attempt(client_ip)
                 await asyncio.sleep(0.6)
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="认证失败")

@@ -14,7 +14,6 @@ export const Sidebar = {
     "switch-mode",
     "select-category",
     "request-create-category",
-    "prune-categories",
     "close",
   ],
   methods: {
@@ -60,9 +59,6 @@ export const Sidebar = {
         <div class="sidebar-header">
           <h3>分类 · {{ categories.length }}</h3>
           <div class="sidebar-tools">
-            <button class="icon sm" @click="$emit('prune-categories')" title="清理空分类">
-              <Icon name="eraser" :size="14" />
-            </button>
             <button class="icon sm" @click="addCategory" title="新增分类">
               <Icon name="folder-plus" :size="14" />
             </button>

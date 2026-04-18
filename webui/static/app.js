@@ -8,6 +8,8 @@ import { PlayerModal } from "./components/PlayerModal.js";
 import { DataBrowser } from "./components/DataBrowser.js";
 import { DataFileModal } from "./components/DataFileModal.js";
 import { CategoryCreateDialog } from "./components/CategoryCreateDialog.js";
+import { SettingsDialog } from "./components/SettingsDialog.js";
+import { BatchCategoryDialog } from "./components/BatchCategoryDialog.js";
 import { Toast } from "./components/Toast.js";
 import { AudioDock } from "./components/AudioDock.js";
 import { UploadProgress } from "./components/UploadProgress.js";
@@ -77,6 +79,8 @@ createApp({
     DataBrowser,
     DataFileModal,
     CategoryCreateDialog,
+    SettingsDialog,
+    BatchCategoryDialog,
     Toast,
     AudioDock,
     UploadProgress,
@@ -115,6 +119,8 @@ createApp({
       uploadJobs: [],
       uploadPanelOpen: false,
       categoryDialogVisible: false,
+      settingsVisible: false,
+      batchCategoryVisible: false,
       filters: {
         category: "",
         query: "",
@@ -514,6 +520,129 @@ createApp({
       } catch (error) {
         this.notify(error.message, "error");
       }
+    },
+    async renameCategory(payload) {
+      if (!payload || !payload.oldName) return;
+      const oldName = payload.oldName;
+      const newName = (payload.newName || "").trim();
+      const description = payload.description;
+      if (!newName) {
+        this.notify("分类名称不能为空", "warning");
+        return;
+      }
+      const body = {};
+      if (newName !== oldName) body.new_name = newName;
+      if (description !== undefined) body.description = description;
+      if (!Object.keys(body).length) return;
+      try {
+        const result = await this.request(
+          `/api/categories/${encodeURIComponent(oldName)}`,
+          { method: "PATCH", body },
+        );
+        const finalName = (result && result.category) || newName;
+        if (this.filters.category === oldName) {
+          this.filters.category = finalName;
+        }
+        if (newName !== oldName) {
+          this.notify(`已重命名为 ${finalName}`, "success");
+        } else {
+          this.notify("分类描述已更新", "success");
+        }
+        await Promise.all([
+          this.fetchCategories(),
+          this.fetchStats(),
+          this.fetchMedia(),
+        ]);
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    async deleteCategory(payload) {
+      if (!payload || !payload.category) return;
+      const name = payload.category;
+      const removeFiles = payload.removeFiles !== false;
+      try {
+        const query = removeFiles ? "" : "?remove_files=false";
+        const result = await this.request(
+          `/api/categories/${encodeURIComponent(name)}${query}`,
+          { method: "DELETE" },
+        );
+        const removedRows = (result && result.deleted_rows) || 0;
+        if (this.filters.category === name) {
+          this.filters.category = "";
+        }
+        if (removeFiles && removedRows > 0) {
+          this.notify(
+            `分类 ${name} 已删除，连同 ${removedRows} 条记录`,
+            "success",
+          );
+        } else {
+          this.notify(`分类 ${name} 已删除`, "success");
+        }
+        await Promise.all([
+          this.fetchCategories(),
+          this.fetchStats(),
+          this.fetchMedia(),
+        ]);
+      } catch (error) {
+        this.notify(error.message, "error");
+      }
+    },
+    openSettings() {
+      this.settingsVisible = true;
+    },
+    openBatchCategory() {
+      if (!this.selectedIds.length) {
+        this.notify("请先选择媒体", "info");
+        return;
+      }
+      this.batchCategoryVisible = true;
+    },
+    async submitBatchCategory(payload) {
+      const target = (payload && payload.category) || "";
+      if (!target) return;
+      if (!this.selectedIds.length) {
+        this.batchCategoryVisible = false;
+        return;
+      }
+      const ids = [...this.selectedIds];
+      let success = 0;
+      let firstError = "";
+      for (const id of ids) {
+        try {
+          await this.request(`/api/media/${id}`, {
+            method: "PATCH",
+            body: { category: target },
+          });
+          success += 1;
+        } catch (error) {
+          if (!firstError) firstError = error.message || "未知错误";
+        }
+      }
+      this.batchCategoryVisible = false;
+      this.selectedIds = [];
+      if (success === ids.length) {
+        this.notify(
+          `已将 ${success} 个媒体移动到分类 ${target}`,
+          "success",
+        );
+      } else if (success > 0) {
+        this.notify(
+          `部分完成：${success}/${ids.length} 已移动到 ${target}` +
+            (firstError ? `；首个错误：${firstError}` : ""),
+          "warning",
+        );
+      } else {
+        this.notify(
+          `批量移动失败${firstError ? "：" + firstError : ""}`,
+          "error",
+        );
+      }
+      await Promise.all([
+        this.fetchCategories(),
+        this.fetchStats(),
+        this.fetchMedia(),
+      ]);
     },
     async pruneCategories() {
       if (
@@ -1028,6 +1157,9 @@ createApp({
             <button class="icon" @click="refreshAll" title="刷新">
               <Icon name="refresh-cw" :size="16" />
             </button>
+            <button class="icon" @click="openSettings" title="设置（分类管理 / 清理）">
+              <Icon name="settings" :size="16" />
+            </button>
             <button class="ghost" @click="logout()" title="退出">
               <Icon name="log-out" :size="15" />
               <span class="hide-mobile">退出</span>
@@ -1052,7 +1184,6 @@ createApp({
               @switch-mode="switchMode"
               @select-category="selectCategory"
               @request-create-category="categoryDialogVisible = true"
-              @prune-categories="pruneCategories"
             />
           </div>
 
@@ -1081,6 +1212,7 @@ createApp({
               @page-change="onPageChange"
               @clear-selection="clearSelection"
               @batch-delete="batchDelete"
+              @batch-change-category="openBatchCategory"
               @copy-link="copyMediaLink"
             />
 
@@ -1155,6 +1287,24 @@ createApp({
           :existing="categories"
           @close="categoryDialogVisible = false"
           @submit="createCategory"
+        />
+
+        <SettingsDialog
+          :visible="settingsVisible"
+          :categories="categories"
+          @close="settingsVisible = false"
+          @rename-category="renameCategory"
+          @delete-category="deleteCategory"
+          @prune-categories="pruneCategories"
+        />
+
+        <BatchCategoryDialog
+          :visible="batchCategoryVisible"
+          :count="selectedCount"
+          :categories="categories"
+          :active-category="filters.category"
+          @close="batchCategoryVisible = false"
+          @submit="submitBatchCategory"
         />
 
         <UploadProgress
