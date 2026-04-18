@@ -109,6 +109,7 @@ TEXT_PREVIEW_EXTENSIONS: set[str] = {
     ".ass",
     ".vtt",
 }
+TEXT_PREVIEW_FILENAMES: set[str] = {"dockerfile", "makefile"}
 TEXT_PREVIEW_MAX_BYTES = 1_500_000
 
 try:
@@ -134,6 +135,29 @@ from ..core.utils import (
 
 
 class WebUIServer:
+    CAPABILITY_SECRET_FILENAME = ".capability_secret"
+
+    @staticmethod
+    def _safe_int(value: Any, default: int, minimum: int = 0) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = default
+        return max(minimum, parsed)
+
+    @staticmethod
+    def _parse_secret_bytes(raw: bytes) -> bytes | None:
+        if len(raw) == 32:
+            return raw
+        text = raw.decode("utf-8", errors="ignore").strip()
+        if not text:
+            return None
+        try:
+            decoded = bytes.fromhex(text)
+        except ValueError:
+            return None
+        return decoded if len(decoded) == 32 else None
+
     def __init__(
         self,
         media_manager: MediaManager,
@@ -154,21 +178,29 @@ class WebUIServer:
             logger.warning("创建缩略图目录失败: %s", exc)
 
         self.host = str(config.get("host", "0.0.0.0") or "0.0.0.0")
-        self.port = int(config.get("port", 7003) or 7003)
+        self.port = self._safe_int(config.get("port", 7003) or 7003, 7003, minimum=1)
         self.enabled = bool(config.get("enabled", False))
         self.expose_astrbot_data = bool(config.get("expose_astrbot_data", False))
-        self.session_timeout = max(60, int(config.get("session_timeout", 3600) or 3600))
+        self.session_timeout = self._safe_int(
+            config.get("session_timeout", 3600) or 3600, 3600, minimum=60
+        )
         self.public_base_url = str(config.get("public_base_url", "") or "").strip().rstrip("/")
         self.callback_api_base = str(callback_api_base or "").strip().rstrip("/")
-        self.readonly_token_ttl = max(
-            60, int(config.get("readonly_token_ttl", self.session_timeout) or self.session_timeout)
+        self.readonly_token_ttl = self._safe_int(
+            config.get("readonly_token_ttl", self.session_timeout) or self.session_timeout,
+            self.session_timeout,
+            minimum=60,
         )
-        self.share_url_ttl = max(60, int(config.get("share_url_ttl", 3600) or 3600))
-        self.data_token_ttl = max(
-            60, int(config.get("data_token_ttl", self.session_timeout) or self.session_timeout)
+        self.share_url_ttl = self._safe_int(
+            config.get("share_url_ttl", 3600) or 3600, 3600, minimum=60
+        )
+        self.data_token_ttl = self._safe_int(
+            config.get("data_token_ttl", self.session_timeout) or self.session_timeout,
+            self.session_timeout,
+            minimum=60,
         )
         self.allowed_origins = self._parse_allowed_origins(config.get("allowed_origins"))
-        self._capability_secret = secrets.token_bytes(32)
+        self._capability_secret = self._load_or_create_capability_secret()
 
         self._access_password = str(config.get("access_password", "") or "").strip()
         self._password_generated = False
@@ -176,7 +208,8 @@ class WebUIServer:
             self._access_password = generate_password(16)
             self._password_generated = True
             logger.warning(
-                "Media Portal WebUI 未配置密码，已自动生成随机密码: %s （建议通过 /media password set 固定，或在配置中设置 access_password）",
+                "Media Portal WebUI 未配置密码，已自动生成随机密码: %s"
+                "（建议尽快在配置中设置 access_password 固定密码）。",
                 self._access_password,
             )
 
@@ -206,6 +239,28 @@ class WebUIServer:
     @property
     def password_generated(self) -> bool:
         return self._password_generated
+
+    def _capability_secret_path(self) -> Path:
+        return (self.media_manager.plugin_data_dir / self.CAPABILITY_SECRET_FILENAME).resolve()
+
+    def _load_or_create_capability_secret(self) -> bytes:
+        secret_path = self._capability_secret_path()
+        try:
+            if secret_path.exists() and secret_path.is_file():
+                parsed = self._parse_secret_bytes(secret_path.read_bytes())
+                if parsed is not None:
+                    return parsed
+                logger.warning("capability secret 文件无效，将重新生成: %s", secret_path)
+
+            secret = secrets.token_bytes(32)
+            secret_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = secret_path.parent / f"{secret_path.name}.tmp"
+            tmp_path.write_text(secret.hex(), encoding="utf-8")
+            tmp_path.replace(secret_path)
+            return secret
+        except Exception as exc:
+            logger.warning("capability secret 持久化失败，回退临时 secret: %s", exc)
+            return secrets.token_bytes(32)
 
     @staticmethod
     def _parse_allowed_origins(value: Any) -> list[str]:
@@ -249,6 +304,8 @@ class WebUIServer:
                 error = self._server_task.exception()
                 raise RuntimeError(f"WebUI 启动失败: {error}") from error
             await asyncio.sleep(0.1)
+        # 5 秒内未就绪：让调用方明确感知，而不是静默返回一个不可用的 server。
+        raise TimeoutError("Media Portal WebUI 在 5 秒内未就绪，启动可能失败。")
 
     async def stop(self) -> None:
         if self._cleanup_task and not self._cleanup_task.done():
@@ -260,15 +317,29 @@ class WebUIServer:
         if self._server:
             self._server.should_exit = True
         if self._server_task:
-            await self._server_task
+            try:
+                await asyncio.wait_for(self._server_task, timeout=10)
+            except asyncio.TimeoutError:
+                logger.warning("WebUI 在 10 秒内未能优雅停止，强制取消。")
+                self._server_task.cancel()
+                try:
+                    await self._server_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         self._cleanup_task = None
         self._server_task = None
         self._server = None
 
-    async def rotate_password(self, password: str = "") -> str:
-        new_password = password.strip() or generate_password(16)
+    async def rotate_password(self, password: str | None = None) -> str:
+        """重置 WebUI 访问密码。
+
+        传入非空字符串会固定为该密码；传入 ``None`` 或空字符串则随机生成一个。
+        重置完成后会清理所有现有会话 token，强制重新登录。
+        """
+        candidate = (password or "").strip()
+        new_password = candidate or generate_password(16)
         self._access_password = new_password
-        self._password_generated = not bool(password.strip())
+        self._password_generated = not bool(candidate)
         async with self._token_lock:
             self._tokens.clear()
         if self._password_generated:
@@ -448,9 +519,11 @@ class WebUIServer:
         )
 
     async def _periodic_cleanup(self) -> None:
+        # 周期与 session_timeout 联动，避免会话窗口过短时清理滞后。
+        interval = max(30, min(300, self.session_timeout))
         while True:
             try:
-                await asyncio.sleep(300)
+                await asyncio.sleep(interval)
                 async with self._token_lock:
                     self._cleanup_tokens_locked()
                 async with self._attempt_lock:
@@ -492,9 +565,18 @@ class WebUIServer:
             records = self._failed_attempts.get(client_ip, [])
             return len(records) < 5
 
-    async def _record_failed_attempt(self, client_ip: str) -> None:
+    async def _record_failed_attempt(self, client_ip: str) -> bool:
         async with self._attempt_lock:
-            self._failed_attempts.setdefault(client_ip, []).append(time.time())
+            self._cleanup_attempts_locked()
+            records = self._failed_attempts.setdefault(client_ip, [])
+            if len(records) >= 5:
+                return False
+            records.append(time.time())
+            return True
+
+    async def _clear_failed_attempts(self, client_ip: str) -> None:
+        async with self._attempt_lock:
+            self._failed_attempts.pop(client_ip, None)
 
     def _extract_token(self, request: Request) -> str:
         auth_header = request.headers.get("Authorization", "")
@@ -586,12 +668,27 @@ class WebUIServer:
         return await asyncio.to_thread(self._ensure_thumbnail_sync, source, size)
 
     def _build_data_item(self, path: Path) -> dict[str, Any]:
-        is_dir = path.is_dir()
-        rel_path = path.resolve().relative_to(self.data_root).as_posix()
+        try:
+            is_dir = path.is_dir()
+        except OSError:
+            is_dir = False
+        try:
+            rel_path = path.resolve().relative_to(self.data_root).as_posix()
+        except Exception:
+            rel_path = path.name
         if rel_path == ".":
             rel_path = ""
-        size = 0 if is_dir else path.stat().st_size
-        mime, kind = detect_mime_and_kind(path) if not is_dir else ("", "folder")
+        try:
+            size = 0 if is_dir else path.stat().st_size
+        except OSError:
+            size = 0
+        if is_dir:
+            mime, kind = ("", "folder")
+        else:
+            try:
+                mime, kind = detect_mime_and_kind(path)
+            except OSError:
+                mime, kind = ("application/octet-stream", "other")
         return {
             "name": path.name,
             "path": rel_path,
@@ -633,18 +730,19 @@ class WebUIServer:
             if not password:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="密码不能为空")
             client_ip = request.client.host if request.client else "unknown"
-            if not await self._check_rate_limit(client_ip):
-                raise HTTPException(
-                    status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="尝试过于频繁，请稍后再试",
-                )
             if not hmac.compare_digest(
                 password.encode("utf-8"),
                 self._access_password.encode("utf-8"),
             ):
-                await self._record_failed_attempt(client_ip)
+                accepted = await self._record_failed_attempt(client_ip)
                 await asyncio.sleep(0.6)
+                if not accepted:
+                    raise HTTPException(
+                        status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="尝试过于频繁，请稍后再试",
+                    )
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+            await self._clear_failed_attempts(client_ip)
 
             token = secrets.token_urlsafe(32)
             now = time.time()
@@ -679,7 +777,7 @@ class WebUIServer:
             return {"message": "ok"}
 
         @self._app.get("/api/config")
-        async def config(token: str = Depends(self._auth_dependency())) -> dict[str, Any]:
+        async def get_config(token: str = Depends(self._auth_dependency())) -> dict[str, Any]:
             _ = token
             max_bytes = int(getattr(self.media_manager, "max_file_size", 0) or 0)
             max_mb = max_bytes // (1024 * 1024) if max_bytes > 0 else 0
@@ -1045,7 +1143,11 @@ class WebUIServer:
                 except Exception:
                     continue
 
-            ext_hints_text = suffix in TEXT_PREVIEW_EXTENSIONS or kind in {"text", "code"}
+            name_hints_text = target.name.lower() in TEXT_PREVIEW_FILENAMES
+            ext_hints_text = (
+                suffix in TEXT_PREVIEW_EXTENSIONS
+                or name_hints_text
+            )
             is_text = False
             if decoded_text is not None and "\x00" not in decoded_text:
                 if ext_hints_text:

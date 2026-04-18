@@ -9,7 +9,7 @@ import secrets
 import socket
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import unquote, urljoin, urlparse
 
 import aiofiles
@@ -33,10 +33,70 @@ class DownloadedFile:
     content_type: str = ""
 
 
+class _PublicIPResolver(aiohttp.abc.AbstractResolver):
+    """在 DNS 解析阶段只允许公网 IP，防止 DNS rebinding。"""
+
+    def __init__(self, is_public_ip: Callable[[str], bool]):
+        self._is_public_ip = is_public_ip
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: int = socket.AF_UNSPEC,
+    ) -> list[dict[str, Any]]:
+        text = str(host or "").strip().lower()
+        if not text:
+            raise OSError("URL 缺少有效主机名。")
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(
+                text,
+                port,
+                family=family,
+                type=socket.SOCK_STREAM,
+                proto=socket.IPPROTO_TCP,
+            )
+        except Exception as exc:
+            raise OSError(f"无法解析目标地址: {text}") from exc
+        resolved: list[dict[str, Any]] = []
+        for family_value, _type_value, proto_value, _canonname, sockaddr in infos:
+            if not isinstance(sockaddr, tuple) or not sockaddr:
+                continue
+            ip_text = str(sockaddr[0])
+            if not self._is_public_ip(ip_text):
+                raise OSError("禁止访问本地或内网地址。")
+            resolved_port = int(sockaddr[1]) if len(sockaddr) > 1 else int(port or 0)
+            resolved.append(
+                {
+                    "hostname": text,
+                    "host": ip_text,
+                    "port": resolved_port,
+                    "family": family_value,
+                    "proto": proto_value or socket.IPPROTO_TCP,
+                    "flags": socket.AI_NUMERICHOST,
+                }
+            )
+        if not resolved:
+            raise OSError(f"无法解析目标地址: {text}")
+        return resolved
+
+    async def close(self) -> None:
+        return None
+
+
 class MediaDownloader:
-    def __init__(self, temp_dir: Path, max_file_size_mb: int = 50):
+    MAX_REDIRECTS = 6
+
+    def __init__(
+        self,
+        temp_dir: Path,
+        max_file_size_mb: int = 50,
+        allow_local_path_source: bool = True,
+    ):
         self.temp_dir = ensure_dir(temp_dir)
         self.max_file_size = max_file_size_mb * 1024 * 1024
+        self.allow_local_path_source = bool(allow_local_path_source)
 
     @staticmethod
     def is_http_url(value: str) -> bool:
@@ -49,6 +109,10 @@ class MediaDownloader:
             raise ValueError("source 不能为空。")
         if self.is_http_url(src):
             return MediaSource(source_type="url", value=src, filename_hint="")
+        if not self.allow_local_path_source:
+            raise ValueError(
+                "出于安全考虑，source 参数仅支持 URL；本地文件请通过消息附件上传。"
+            )
         path = Path(src).expanduser().resolve()
         return MediaSource(source_type="local", value=str(path), filename_hint=path.name)
 
@@ -74,33 +138,13 @@ class MediaDownloader:
         if text in {"localhost", "localhost.localdomain"}:
             raise ValueError("禁止访问本地或内网地址。")
 
-        # 直接 IP
-        if self._is_public_ip(text):
-            return
         try:
-            ipaddress.ip_address(text)
-            raise ValueError("禁止访问本地或内网地址。")
+            ip_obj = ipaddress.ip_address(text)
         except ValueError:
-            pass
-
-        loop = asyncio.get_running_loop()
-        try:
-            infos = await loop.getaddrinfo(
-                text,
-                None,
-                family=socket.AF_UNSPEC,
-                type=socket.SOCK_STREAM,
-            )
-        except Exception as exc:
-            raise ValueError(f"无法解析目标地址: {text}") from exc
-
-        if not infos:
-            raise ValueError(f"无法解析目标地址: {text}")
-        for info in infos:
-            sockaddr = info[4]
-            ip_text = str(sockaddr[0]) if isinstance(sockaddr, tuple) and sockaddr else ""
-            if not self._is_public_ip(ip_text):
-                raise ValueError("禁止访问本地或内网地址。")
+            # 域名场景的 DNS 公网校验交由 _PublicIPResolver，在真正连接前执行。
+            return
+        if not self._is_public_ip(str(ip_obj)):
+            raise ValueError("禁止访问本地或内网地址。")
 
     async def _assert_safe_url(self, raw_url: str) -> None:
         parsed = urlparse(str(raw_url or "").strip())
@@ -120,8 +164,17 @@ class MediaDownloader:
         if not current_url:
             raise ValueError("URL 不能为空。")
 
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            for _ in range(6):
+        connector = aiohttp.TCPConnector(
+            resolver=_PublicIPResolver(self._is_public_ip),
+            ttl_dns_cache=0,
+            use_dns_cache=False,
+        )
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            headers=headers,
+            connector=connector,
+        ) as session:
+            for _ in range(self.MAX_REDIRECTS):
                 await self._assert_safe_url(current_url)
                 async with session.get(current_url, allow_redirects=False) as resp:
                     if resp.status in {301, 302, 303, 307, 308}:
@@ -134,7 +187,11 @@ class MediaDownloader:
                     if resp.status >= 400:
                         raise RuntimeError(f"下载失败，HTTP {resp.status}")
 
-                    declared = int(resp.headers.get("Content-Length", "0") or 0)
+                    raw_declared = str(resp.headers.get("Content-Length", "0") or "0").strip()
+                    try:
+                        declared = int(raw_declared)
+                    except ValueError:
+                        declared = 0
                     if declared > self.max_file_size:
                         raise ValueError("文件过大，超过限制。")
 
@@ -156,23 +213,31 @@ class MediaDownloader:
                     temp_path = unique_path(self.temp_dir / temp_name)
 
                     downloaded = 0
-                    async with aiofiles.open(temp_path, "wb") as fp:
-                        async for chunk in resp.content.iter_chunked(1024 * 64):
-                            downloaded += len(chunk)
-                            if downloaded > self.max_file_size:
-                                await fp.close()
-                                try:
-                                    temp_path.unlink(missing_ok=True)
-                                except Exception:
-                                    pass
-                                raise ValueError("文件过大，超过限制。")
-                            await fp.write(chunk)
+                    write_ok = False
+                    try:
+                        async with aiofiles.open(temp_path, "wb") as fp:
+                            async for chunk in resp.content.iter_chunked(1024 * 64):
+                                downloaded += len(chunk)
+                                if downloaded > self.max_file_size:
+                                    raise ValueError("文件过大，超过限制。")
+                                await fp.write(chunk)
+                        if downloaded == 0:
+                            # 某些服务器在 2xx 中返回空 body（例如异常回源），
+                            # 不应把 0 字节文件当作“下载成功”。
+                            raise RuntimeError("下载得到空响应（0 字节），已拒绝保存。")
+                        write_ok = True
+                    finally:
+                        if not write_ok:
+                            try:
+                                temp_path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
                     return DownloadedFile(
                         path=temp_path,
                         filename=clean_name,
                         content_type=content_type,
                     )
-        raise RuntimeError("重定向次数过多，已拒绝下载。")
+        raise RuntimeError(f"重定向次数过多（>{self.MAX_REDIRECTS} 次），已拒绝下载。")
 
     async def extract_sources_from_event(self, event: Any) -> list[MediaSource]:
         components = list(getattr(getattr(event, "message_obj", None), "message", []) or [])
@@ -282,15 +347,41 @@ class MediaDownloader:
 
     @staticmethod
     def _filename_from_headers(content_disposition: str) -> str:
+        """从 ``Content-Disposition`` 中提取文件名。
+
+        优先识别 RFC 5987 的 ``filename*=UTF-8''xxx`` 扩展形式，其次回退到
+        传统的 ``filename="xxx"`` 形式，以便正确处理非 ASCII 文件名。
+        """
         if not content_disposition:
             return ""
         segments = [segment.strip() for segment in content_disposition.split(";")]
+
+        extended_value = ""
+        legacy_value = ""
         for segment in segments:
-            if not segment.lower().startswith("filename="):
-                continue
-            value = segment.split("=", 1)[1].strip().strip('"').strip("'")
-            return sanitize_filename(unquote(value), fallback="")
-        return ""
+            lower = segment.lower()
+            if lower.startswith("filename*="):
+                raw = segment.split("=", 1)[1].strip().strip('"').strip("'")
+                # 形如 "UTF-8''%E4%B8%AD%E6%96%87.png"；charset 与 lang 可能省略。
+                parts = raw.split("'", 2)
+                if len(parts) == 3:
+                    charset = parts[0].strip() or "utf-8"
+                    encoded_name = parts[2]
+                else:
+                    charset = "utf-8"
+                    encoded_name = raw
+                try:
+                    extended_value = unquote(encoded_name, encoding=charset, errors="replace")
+                except (LookupError, ValueError):
+                    extended_value = unquote(encoded_name, errors="replace")
+            elif lower.startswith("filename="):
+                value = segment.split("=", 1)[1].strip().strip('"').strip("'")
+                legacy_value = unquote(value)
+
+        chosen = extended_value or legacy_value
+        if not chosen:
+            return ""
+        return sanitize_filename(chosen, fallback="")
 
     def _parse_url_value(self, raw_value: Any) -> str:
         if not isinstance(raw_value, str):
@@ -308,7 +399,13 @@ class MediaDownloader:
             return ""
         if text.startswith("file:///"):
             parsed = urlparse(text)
-            text = unquote(parsed.path or "")
+            uri_path = unquote(parsed.path or "")
+            # Windows file URI 通常是 /C:/path，Path 直接处理会找不到文件。
+            if len(uri_path) >= 3 and uri_path[0] == "/" and uri_path[2] == ":":
+                drive_letter = uri_path[1]
+                if drive_letter.isalpha():
+                    uri_path = uri_path[1:]
+            text = uri_path
         if self.is_http_url(text):
             return ""
         local_path = Path(text).expanduser()

@@ -74,6 +74,9 @@ class MediaManager:
         self.db_path = self.plugin_data_dir / "index.db"
         self._conn: aiosqlite.Connection | None = None
         self._db_lock = asyncio.Lock()
+        # 保护 "去重查询 + 落盘 + 索引写入" 这一段 check-then-act 的原子性，
+        # 避免并发请求同一文件时重复写入 SHA256 索引记录。
+        self._save_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         async with self._db_lock:
@@ -121,8 +124,17 @@ class MediaManager:
     async def _ensure_conn(self) -> aiosqlite.Connection:
         if self._conn is None:
             await self.initialize()
-        assert self._conn is not None
+        if self._conn is None:  # pragma: no cover - 防御 initialize 异常静默失败
+            raise RuntimeError("媒体索引数据库尚未初始化。")
         return self._conn
+
+    @staticmethod
+    def _escape_like(text: str) -> str:
+        """转义 LIKE 中的特殊字符，配合 ``ESCAPE '\\\\'`` 使用。
+
+        避免用户输入的 ``%`` / ``_`` 被当作通配符，或反斜杠误解释。
+        """
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @staticmethod
     def _parse_tags(tags: Any) -> list[str]:
@@ -270,9 +282,10 @@ class MediaManager:
             params.append(kind.lower())
         if query.strip():
             where_parts.append(
-                "(filename LIKE ? OR description LIKE ? OR tags LIKE ? OR category LIKE ?)"
+                "(filename LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
+                "OR tags LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')"
             )
-            wildcard = f"%{query.strip()}%"
+            wildcard = f"%{self._escape_like(query.strip())}%"
             params.extend([wildcard, wildcard, wildcard, wildcard])
 
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
@@ -318,9 +331,10 @@ class MediaManager:
         limit = max(1, min(50, int(limit)))
         params: list[Any] = []
         where_parts = [
-            "(filename LIKE ? OR description LIKE ? OR tags LIKE ? OR category LIKE ?)"
+            "(filename LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
+            "OR tags LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')"
         ]
-        wildcard = f"%{q}%"
+        wildcard = f"%{self._escape_like(q)}%"
         params.extend([wildcard, wildcard, wildcard, wildcard])
         if category:
             where_parts.append("category = ?")
@@ -401,48 +415,51 @@ class MediaManager:
             raise ValueError(f"文件类型不受支持: {kind}")
 
         source_hash = file_sha256(source)
-        duplicated = await self._get_by_sha256(source_hash)
         should_move = self.default_move_local if move is None else bool(move)
-        if duplicated:
+
+        # 进入串行化临界区，避免并发请求对同一 SHA256 同时 INSERT。
+        async with self._save_lock:
+            duplicated = await self._get_by_sha256(source_hash)
+            if duplicated:
+                if should_move:
+                    try:
+                        duplicated_path = Path(duplicated.abs_path).resolve()
+                        if source != duplicated_path:
+                            source.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                return duplicated
+
+            normalized_category, target = await self._build_target_path(
+                category,
+                filename_hint=filename or source.name,
+                source_path=source,
+            )
+
+            temp_target = target.with_suffix(f"{target.suffix}.part")
+            if temp_target.exists():
+                temp_target.unlink(missing_ok=True)
             if should_move:
-                try:
-                    duplicated_path = Path(duplicated.abs_path).resolve()
-                    if source != duplicated_path:
-                        source.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            return duplicated
+                shutil.move(str(source), str(temp_target))
+            else:
+                shutil.copy2(source, temp_target)
+            temp_target.replace(target)
 
-        normalized_category, target = await self._build_target_path(
-            category,
-            filename_hint=filename or source.name,
-            source_path=source,
-        )
-
-        temp_target = target.with_suffix(f"{target.suffix}.part")
-        if temp_target.exists():
-            temp_target.unlink(missing_ok=True)
-        if should_move:
-            shutil.move(str(source), str(temp_target))
-        else:
-            shutil.copy2(source, temp_target)
-        temp_target.replace(target)
-
-        rel_path = relative_posix(target, self.media_root)
-        saved = await self._insert_record(
-            category=normalized_category,
-            filename=target.name,
-            rel_path=rel_path,
-            kind=kind,
-            mime=mime,
-            size=target.stat().st_size,
-            sha256=source_hash,
-            source_url=source_url,
-            sender_id=sender_id,
-            description=description.strip(),
-            tags=self._parse_tags(tags),
-        )
-        return saved
+            rel_path = relative_posix(target, self.media_root)
+            saved = await self._insert_record(
+                category=normalized_category,
+                filename=target.name,
+                rel_path=rel_path,
+                kind=kind,
+                mime=mime,
+                size=target.stat().st_size,
+                sha256=source_hash,
+                source_url=source_url,
+                sender_id=sender_id,
+                description=description.strip(),
+                tags=self._parse_tags(tags),
+            )
+            return saved
 
     async def save_from_url(
         self,
@@ -545,7 +562,8 @@ class MediaManager:
             )
             await conn.commit()
         refreshed = await self.get_by_id(media_id)
-        assert refreshed is not None
+        if refreshed is None:
+            raise RuntimeError("更新后的记录意外丢失。")
         return refreshed
 
     async def delete_media(self, media_id: int) -> bool:
@@ -574,7 +592,7 @@ class MediaManager:
         normalized_category = self.category_manager.ensure_category(new_category)
         target_dir = ensure_dir(self.media_root / normalized_category)
         target_path = unique_path(target_dir / source.name)
-        source.rename(target_path)
+        shutil.move(str(source), str(target_path))
 
         new_rel_path = relative_posix(target_path, self.media_root)
         conn = await self._ensure_conn()
@@ -588,7 +606,8 @@ class MediaManager:
         )
         await conn.commit()
         refreshed = await self.get_by_id(media_id)
-        assert refreshed is not None
+        if refreshed is None:
+            raise RuntimeError("移动后的记录意外丢失。")
         return refreshed
 
     async def create_category(self, category: str, description: str = "") -> str:
@@ -688,35 +707,52 @@ class MediaManager:
         fs_rel_paths: set[str] = set()
         indexed = 0
         skipped = 0
-        for category_dir in self.media_root.iterdir():
-            if not category_dir.is_dir():
+        try:
+            category_dirs = list(self.media_root.iterdir())
+        except OSError as exc:
+            logger.warning("扫描根目录失败: %s", exc)
+            category_dirs = []
+        for category_dir in category_dirs:
+            try:
+                if not category_dir.is_dir():
+                    continue
+            except OSError:
                 continue
             category = slugify_category(category_dir.name)
             self.category_manager.ensure_category(category)
-            for file_path in category_dir.iterdir():
-                if not file_path.is_file():
-                    continue
-                rel = relative_posix(file_path, self.media_root)
-                fs_rel_paths.add(rel)
-                if rel in db_rel_to_id:
-                    continue
-                mime, kind = detect_mime_and_kind(file_path)
-                if not is_kind_allowed(kind, self.allowed_kinds):
+            try:
+                file_iter = list(category_dir.iterdir())
+            except OSError as exc:
+                logger.warning("扫描分类目录失败 %s: %s", category_dir, exc)
+                continue
+            for file_path in file_iter:
+                try:
+                    if not file_path.is_file():
+                        continue
+                    rel = relative_posix(file_path, self.media_root)
+                    fs_rel_paths.add(rel)
+                    if rel in db_rel_to_id:
+                        continue
+                    mime, kind = detect_mime_and_kind(file_path)
+                    if not is_kind_allowed(kind, self.allowed_kinds):
+                        skipped += 1
+                        continue
+                    sha256 = file_sha256(file_path)
+                    await self._insert_record(
+                        category=category,
+                        filename=file_path.name,
+                        rel_path=rel,
+                        kind=kind,
+                        mime=mime,
+                        size=file_path.stat().st_size,
+                        sha256=sha256,
+                        description="",
+                        tags=[],
+                    )
+                    indexed += 1
+                except OSError as exc:
+                    logger.warning("扫描文件失败 %s: %s", file_path, exc)
                     skipped += 1
-                    continue
-                sha256 = file_sha256(file_path)
-                await self._insert_record(
-                    category=category,
-                    filename=file_path.name,
-                    rel_path=rel,
-                    kind=kind,
-                    mime=mime,
-                    size=file_path.stat().st_size,
-                    sha256=sha256,
-                    description="",
-                    tags=[],
-                )
-                indexed += 1
 
         stale = [rel for rel in db_rel_to_id.keys() if rel not in fs_rel_paths]
         removed = 0

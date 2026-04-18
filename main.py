@@ -16,7 +16,7 @@ from astrbot.core.message.message_event_result import MessageChain
 try:
     from astrbot.core import astrbot_config
 except Exception:  # pragma: no cover
-    astrbot_config = {}
+    astrbot_config = None
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
 from .core.utils import format_size, parse_bool
@@ -33,7 +33,7 @@ class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
         super().__init__(context)
         self.context = context
-        self.plugin_data_dir = Path(str(StarTools.get_data_dir())).resolve()
+        self.plugin_data_dir = Path(StarTools.get_data_dir()).resolve()
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
         self.settings = load_plugin_settings(config or {}, plugin_data_dir=self.plugin_data_dir)
 
@@ -44,6 +44,7 @@ class MediaPortalPlugin(Star):
         self.downloader = MediaDownloader(
             temp_dir=self.plugin_data_dir / "temp",
             max_file_size_mb=self.settings.downloader.max_file_size_mb,
+            allow_local_path_source=False,
         )
         self.media_manager = MediaManager(
             media_root=self.settings.media_root,
@@ -64,7 +65,17 @@ class MediaPortalPlugin(Star):
     def _create_tracked_task(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+
+        def _on_done(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.error("Media Portal 后台任务异常: %s", exc, exc_info=True)
+
+        task.add_done_callback(_on_done)
         return task
 
     async def _bootstrap(self) -> None:
@@ -91,7 +102,7 @@ class MediaPortalPlugin(Star):
         if self.webui_server:
             return
         callback_api_base = ""
-        if hasattr(astrbot_config, "get"):
+        if astrbot_config is not None and hasattr(astrbot_config, "get"):
             callback_api_base = str(astrbot_config.get("callback_api_base", "") or "").strip()
         config = {
             "enabled": self.settings.webui.enabled,
@@ -139,8 +150,43 @@ class MediaPortalPlugin(Star):
         return "\n".join(lines)
 
     @staticmethod
-    def _compact_record(record) -> str:
-        return f"id={record.id} 分类={record.category} 文件={record.filename} 类型={record.kind}"
+    def _compact_record(record: Any) -> str:
+        if isinstance(record, dict):
+            return (
+                f"id={record.get('id')} 分类={record.get('category')} "
+                f"文件={record.get('filename')} 类型={record.get('kind')}"
+            )
+        return (
+            f"id={getattr(record, 'id', '')} 分类={getattr(record, 'category', '')} "
+            f"文件={getattr(record, 'filename', '')} 类型={getattr(record, 'kind', '')}"
+        )
+
+    @staticmethod
+    def _parse_limit(value: Any, default: int) -> int:
+        """将 LLM / 用户传入的 ``value`` 安全地归一为整数。
+
+        兼容 ``int``、``float``、以及 ``"12"`` / ``"12.5"`` / ``"  "`` 等字符串形态；
+        解析失败或为空时返回 ``default``。
+        """
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        text = str(value).strip()
+        if not text:
+            return default
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        try:
+            return int(float(text))
+        except (TypeError, ValueError):
+            return default
 
     # WebChat 前端目前只渲染 Plain/Image/Record/File 组件，Video 会被其 _send
     # 静默丢弃，从而表现为工具“已调用但什么都没发”。
@@ -235,7 +281,7 @@ class MediaPortalPlugin(Star):
     @filter.command_group("media")
     def media(self):
         """多媒体管理命令组。"""
-        pass
+        ...
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @media.command("webui")
@@ -288,10 +334,7 @@ class MediaPortalPlugin(Star):
         if not ok:
             yield event.plain_result(message)
             return
-        try:
-            requested_limit = int(limit) if limit else self.DEFAULT_LIST_LIMIT
-        except (TypeError, ValueError):
-            requested_limit = self.DEFAULT_LIST_LIMIT
+        requested_limit = self._parse_limit(limit, self.DEFAULT_LIST_LIMIT)
         effective_limit = max(1, min(self.MAX_LIST_LIMIT, requested_limit))
 
         payload = await self.media_manager.list_media(
@@ -341,9 +384,10 @@ class MediaPortalPlugin(Star):
         if not query.strip():
             yield event.plain_result("请输入关键词，例如：/media search 猫咪")
             return
+        requested_limit = self._parse_limit(limit, 5)
         records = await self.media_manager.search_media(
             query,
-            limit=max(1, min(20, int(limit))),
+            limit=max(1, min(20, requested_limit)),
             category=category,
         )
         if not records:
@@ -382,11 +426,12 @@ class MediaPortalPlugin(Star):
         """保存媒体到媒体库。
 
         Args:
-            source(str): 媒体来源；支持 URL、本地文件路径。留空时从当前消息附件提取。
+            source(str): 媒体来源 URL（仅支持 http/https）。留空时从当前消息附件提取。
+                出于安全考虑，**不接受本地文件路径**；请将本地文件作为附件发送。
             category(str): 分类名。
             description(str): 描述。
             filename(str): 自定义文件名（可选）。
-            move(bool): source 为本地路径时是否移动（true=mv，false=copy）。
+            move(bool): 从消息附件保存时是否移动源文件（true=mv，false=copy）。
         """
 
         ok, message = await self._ensure_ready()
@@ -476,7 +521,7 @@ class MediaPortalPlugin(Star):
             return message
         records = await self.media_manager.list_recent_in_category(
             category,
-            limit=max(1, min(50, int(limit))),
+            limit=max(1, min(50, self._parse_limit(limit, 20))),
             kind=kind,
         )
         if not records:
@@ -507,7 +552,7 @@ class MediaPortalPlugin(Star):
             return message
         records = await self.media_manager.search_media(
             query,
-            limit=max(1, min(30, int(limit))),
+            limit=max(1, min(30, self._parse_limit(limit, 5))),
             category=category,
         )
         if not records:
@@ -641,6 +686,8 @@ class MediaPortalPlugin(Star):
         if errors:
             lines.append("失败：")
             lines.extend(errors[:10])
+            if len(errors) > 10:
+                lines.append(f"... 还有 {len(errors) - 10} 条错误未展示")
         return "\n".join(lines) if lines else "未处理任何媒体。"
 
     @llm_tool(name="update_media")
@@ -700,12 +747,14 @@ class MediaPortalPlugin(Star):
         return f"已更新: {self._compact_record(record)}"
 
     async def terminate(self):
-        for task in list(self._background_tasks):
-            if task.done():
-                continue
+        pending = [task for task in self._background_tasks if not task.done()]
+        for task in pending:
             task.cancel()
-        if self._background_tasks:
-            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         self._background_tasks.clear()
         await self._stop_webui()
-        await self.media_manager.close()
+        try:
+            await self.media_manager.close()
+        except Exception as exc:
+            logger.warning("关闭 MediaManager 失败: %s", exc)

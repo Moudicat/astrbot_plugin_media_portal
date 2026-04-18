@@ -14,9 +14,38 @@ from typing import Iterable
 from urllib.parse import unquote, urlparse
 
 MEDIA_KIND_EXTENSIONS: dict[str, set[str]] = {
-    "image": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg"},
+    "image": {
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",
+        ".avif", ".heic", ".heif",
+    },
     "video": {".mp4", ".mov", ".mkv", ".avi", ".webm", ".flv", ".m4v"},
     "audio": {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma"},
+}
+EXTENSION_MIME_FALLBACK: dict[str, str] = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".webm": "video/webm",
+    ".flv": "video/x-flv",
+    ".m4v": "video/x-m4v",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wma": "audio/x-ms-wma",
 }
 
 
@@ -51,6 +80,8 @@ def slugify_category(name: str, default: str = "default") -> str:
     text = re.sub(r"/+", "_", text)
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"[^\w\u4e00-\u9fff.\-]+", "", text, flags=re.UNICODE)
+    # 连续点号在部分 Windows 场景下解析异常（如 `foo..bar`），统一合并为单个点。
+    text = re.sub(r"\.{2,}", ".", text)
     text = text.strip("._-")
     return text or default
 
@@ -126,12 +157,8 @@ def detect_mime_and_kind(path: Path) -> tuple[str, str]:
             return mime, "audio"
     for kind, extensions in MEDIA_KIND_EXTENSIONS.items():
         if suffix in extensions:
-            if kind == "image":
-                return mime or "image/*", kind
-            if kind == "video":
-                return mime or "video/*", kind
-            if kind == "audio":
-                return mime or "audio/*", kind
+            fallback_mime = EXTENSION_MIME_FALLBACK.get(suffix, "application/octet-stream")
+            return mime or fallback_mime, kind
     return mime or "application/octet-stream", "other"
 
 
@@ -141,6 +168,18 @@ def is_kind_allowed(kind: str, allowed_kinds: Iterable[str]) -> bool:
 
 
 def generate_password(length: int = 16) -> str:
+    """生成一个 URL-safe 随机密码。
+
+    默认长度 16；出于安全建议，生产场景请保持 ``length >= 12``。
+    对 length <= 8 的请求仍会返回相应长度的截断值，但熵偏低，**不建议**在
+    对外暴露的服务上使用。
+    """
+    try:
+        length = int(length)
+    except (TypeError, ValueError):
+        length = 16
+    if length <= 0:
+        length = 1
     if length <= 8:
         return secrets.token_urlsafe(8)[:length]
     raw = secrets.token_urlsafe(max(12, length))
@@ -217,6 +256,8 @@ def is_container_environment() -> bool:
 
 
 def format_size(size: int) -> str:
+    if size is None or size < 0:
+        return "0B"
     if size < 1024:
         return f"{size}B"
     units = ["KB", "MB", "GB", "TB"]

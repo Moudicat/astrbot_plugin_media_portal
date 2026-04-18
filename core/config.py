@@ -13,6 +13,10 @@ try:
 except Exception:  # pragma: no cover - 仅用于本地离线开发环境兜底
 
     def get_astrbot_data_path() -> str:
+        logger.warning(
+            "未找到 astrbot.core.utils.astrbot_path.get_astrbot_data_path，"
+            "将回退到当前工作目录下的 data 目录。"
+        )
         return str((Path.cwd() / "data").resolve())
 
 
@@ -34,7 +38,9 @@ def _as_bool(value: Any, default: bool) -> bool:
 def _as_int(value: Any, default: int, minimum: int | None = None) -> int:
     try:
         parsed = int(value)
-    except Exception:
+    except (TypeError, ValueError):
+        if value is not None and str(value).strip() != "":
+            logger.warning("整数配置值无效: %r，已回退默认值 %s。", value, default)
         parsed = default
     if minimum is not None and parsed < minimum:
         return minimum
@@ -68,6 +74,18 @@ def _normalize_base_url(url: str) -> str:
     normalized = url.strip()
     if not normalized:
         return ""
+    # 防止配置误填 javascript:/file: 等危险 scheme 被直接写进分享链接。
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(normalized)
+    except Exception:  # pragma: no cover - urlparse 极少抛错
+        parsed = None
+    if parsed is not None and parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
+        logger.warning(
+            "public_base_url 的协议 %r 非 http/https，已忽略该配置。", parsed.scheme
+        )
+        return ""
     return normalized.rstrip("/")
 
 
@@ -90,7 +108,19 @@ def _parse_allowed_kinds(value: Any) -> set[str]:
         parsed.update(str(item).strip().lower() for item in value if str(item).strip())
     if not parsed:
         return default
-    return parsed & {"image", "video", "audio"}
+    intersection = parsed & {"image", "video", "audio"}
+    dropped = parsed - {"image", "video", "audio"}
+    if dropped and not intersection:
+        logger.warning(
+            "downloader.allowed_kinds=%s 未包含任何合法值（image/video/audio），将回退默认。",
+            sorted(parsed),
+        )
+        return default
+    if dropped:
+        logger.warning(
+            "downloader.allowed_kinds 中存在未识别项 %s，已忽略。", sorted(dropped)
+        )
+    return intersection
 
 
 @dataclass(slots=True)
@@ -205,8 +235,6 @@ def load_plugin_settings(
         allowed_kinds=_parse_allowed_kinds(downloader_raw.get("allowed_kinds")),
         default_move_local=_as_bool(downloader_raw.get("default_move_local"), True),
     )
-    if not downloader.allowed_kinds:
-        downloader.allowed_kinds = {"image", "video", "audio"}
 
     astrbot_data_dir = Path(get_astrbot_data_path()).resolve()
     if plugin_data_dir is None:
@@ -219,11 +247,12 @@ def load_plugin_settings(
     media_root, effective_mode = _resolve_media_root(
         storage, astrbot_data_dir, plugin_data_dir
     )
+    storage.location_mode = effective_mode
 
     try:
         media_root.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
-        logger.error("创建媒体目录失败: %s", exc)
+        logger.error("创建媒体目录失败: %s", exc, exc_info=True)
         raise
 
     logger.info(
