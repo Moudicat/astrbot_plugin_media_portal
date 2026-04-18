@@ -93,6 +93,10 @@ pip install -r requirements.txt
   返回 WebUI 暴露 URL，生成优先级：`webui.public_base_url` > `callback_api_base` > 自动 `host:port`。
 - `send_media(media_id_or_query)`  
   支持传 ID 或关键词，工具内部直接向当前会话发送媒体。
+- `move_media(media_ids, category)`  
+  将一个或多个媒体重分类到目标分类，`media_ids` 支持单值或逗号分隔（如 `"12,15"`），目标分类不存在会自动创建。
+- `update_media(media_id, category, description, tags)`  
+  统一更新媒体的分类 / 描述 / 标签，留空字段即不修改；`tags` 传 `"-"` 表示清空标签。
 
 ## 🧰 命令列表
 
@@ -101,13 +105,14 @@ pip install -r requirements.txt
 | 指令 | 说明 |
 | --- | --- |
 | `/media webui` | 查看 WebUI 地址与密码（管理员） |
-| `/media password show` | 查看当前密码（管理员） |
-| `/media password regen` | 重置随机密码（管理员） |
-| `/media password set <password>` | 设置指定密码（管理员） |
 | `/media categories` | 查看分类及统计 |
-| `/media list [category] [limit] [kind]` | 列出媒体 |
+| `/media list [category] [limit] [kind]` | 列出媒体，默认最多 10 条，`limit` 最高 50 |
 | `/media search <query> [limit] [category]` | 搜索媒体 |
 | `/media scan` | 扫描目录并修复索引（管理员） |
+
+> 媒体的重分类 / 描述 / 标签调整建议在 WebUI 上完成，或让 AI 调用 `move_media` / `update_media` 工具。
+
+> 密码修改可直接在 WebUI 设置页内完成，或修改 `webui.access_password` 配置后重载插件。
 
 ## ⚙️ 配置说明
 

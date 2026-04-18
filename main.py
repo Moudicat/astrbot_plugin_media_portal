@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover
     astrbot_config = {}
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
-from .core.utils import parse_bool
+from .core.utils import format_size, parse_bool
 from .webui import WebUIServer
 
 
@@ -26,7 +26,7 @@ from .webui import WebUIServer
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.1.1",
+    "0.1.2",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -129,7 +129,7 @@ class MediaPortalPlugin(Star):
             lines.append(f"- {url}")
         lines.append(f"访问密码：{self.webui_server.access_password}")
         if self.webui_server.password_generated:
-            lines.append("当前密码为系统随机生成，建议通过 /media password set <密码> 进行固定。")
+            lines.append("当前密码为系统随机生成，建议在 WebUI 设置页或插件配置中固定一个强密码。")
         return "\n".join(lines)
 
     @staticmethod
@@ -177,39 +177,6 @@ class MediaPortalPlugin(Star):
             return
         yield event.plain_result(self._build_webui_access_message())
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @media.command("password")
-    async def media_password(
-        self,
-        event: AstrMessageEvent,
-        action: str = "show",
-        value: str = "",
-    ):
-        """管理 WebUI 密码。"""
-        ok, message = await self._ensure_ready()
-        if not ok:
-            yield event.plain_result(message)
-            return
-        if not self.webui_server:
-            yield event.plain_result("WebUI 未启用。")
-            return
-        normalized_action = (action or "show").strip().lower()
-        if normalized_action in {"show", "查看"}:
-            yield event.plain_result(self._build_webui_access_message())
-            return
-        if normalized_action in {"regen", "reset", "随机"}:
-            password = await self.webui_server.rotate_password("")
-            yield event.plain_result(f"密码已重置（随机）：{password}")
-            return
-        if normalized_action in {"set", "指定"}:
-            if not value.strip():
-                yield event.plain_result("请提供新密码，例如：/media password set mypass123")
-                return
-            password = await self.webui_server.rotate_password(value.strip())
-            yield event.plain_result(f"密码已更新：{password}")
-            return
-        yield event.plain_result("用法：/media password show|regen|set <密码>")
-
     @media.command("categories")
     async def media_categories(self, event: AstrMessageEvent):
         """查看分类列表。"""
@@ -226,52 +193,63 @@ class MediaPortalPlugin(Star):
         for item in items:
             desc = str(item.get("description", "") or "")
             suffix = f" - {desc}" if desc else ""
+            size_human = item.get("size_human") or format_size(int(item.get("size", 0) or 0))
             lines.append(
-                f"- {item.get('category')}: {item.get('count', 0)} 个, {item.get('size', 0)} B{suffix}"
+                f"- {item.get('category')}: {item.get('count', 0)} 个, {size_human}{suffix}"
             )
         yield event.plain_result("\n".join(lines))
+
+    DEFAULT_LIST_LIMIT = 10
+    MAX_LIST_LIMIT = 50
 
     @media.command("list")
     async def media_list(
         self,
         event: AstrMessageEvent,
         category: str = "",
-        limit: int = 20,
+        limit: int = 0,
         kind: str = "",
     ):
-        """按分类列出媒体。"""
+        """按分类列出媒体（默认仅展示前 10 条，可传 limit 参数扩大至 50）。"""
         ok, message = await self._ensure_ready()
         if not ok:
             yield event.plain_result(message)
             return
-        limit = max(1, min(50, int(limit)))
-        if category:
-            records = await self.media_manager.list_recent_in_category(
-                category,
-                limit=limit,
-                kind=kind,
-            )
-        else:
-            payload = await self.media_manager.list_media(
-                kind=kind,
-                page=1,
-                page_size=limit,
-            )
-            records = payload.get("items", [])
-            if records and isinstance(records[0], dict):
-                lines = ["媒体列表："]
-                for row in records:
-                    lines.append(
-                        f"- id={row['id']} 分类={row['category']} 文件={row['filename']} 类型={row['kind']}"
-                    )
-                yield event.plain_result("\n".join(lines))
-                return
-        if not records:
+        try:
+            requested_limit = int(limit) if limit else self.DEFAULT_LIST_LIMIT
+        except (TypeError, ValueError):
+            requested_limit = self.DEFAULT_LIST_LIMIT
+        effective_limit = max(1, min(self.MAX_LIST_LIMIT, requested_limit))
+
+        payload = await self.media_manager.list_media(
+            category=category,
+            kind=kind,
+            page=1,
+            page_size=effective_limit,
+        )
+        items = payload.get("items", [])
+        total = int(payload.get("total", 0) or 0)
+
+        if not items:
             yield event.plain_result("未找到媒体。")
             return
-        lines = ["媒体列表："]
-        for record in records:
-            lines.append(f"- {self._compact_record(record)}")
+
+        header_scope = f"分类 {category}" if category else "全部分类"
+        header = f"媒体列表（{header_scope}，显示 {len(items)}/{total}）："
+        lines = [header]
+        for row in items:
+            if isinstance(row, dict):
+                lines.append(
+                    f"- id={row.get('id')} 分类={row.get('category')} "
+                    f"文件={row.get('filename')} 类型={row.get('kind')}"
+                )
+            else:
+                lines.append(f"- {self._compact_record(row)}")
+        if total > len(items):
+            lines.append(
+                f"仅显示前 {len(items)} 条，共 {total} 条；"
+                f"如需更多请加参数，例如：/media list {category or '<分类>'} 50"
+            )
         yield event.plain_result("\n".join(lines))
 
     @media.command("search")
@@ -398,8 +376,9 @@ class MediaPortalPlugin(Star):
             return "暂无媒体分类。"
         lines = ["媒体分类："]
         for item in categories:
+            size_human = item.get("size_human") or format_size(int(item.get("size", 0) or 0))
             lines.append(
-                f"- {item['category']}: {item['count']} 个, {item['size']} B, 描述={item.get('description', '')}"
+                f"- {item['category']}: {item['count']} 个, {size_human}, 描述={item.get('description', '')}"
             )
         return "\n".join(lines)
 
@@ -466,13 +445,25 @@ class MediaPortalPlugin(Star):
         return "\n".join(lines)
 
     @llm_tool(name="get_media_url")
-    async def tool_get_media_url(self, event: AstrMessageEvent, media_id: int) -> str:
-        """获取媒体公开访问 URL。"""
+    async def tool_get_media_url(
+        self,
+        event: AstrMessageEvent,
+        media_id: str,
+    ) -> str:
+        """获取媒体公开访问 URL。
+
+        Args:
+            media_id(string): 媒体 ID（数字字符串，例如 "12"）。
+        """
         _ = event
         ok, message = await self._ensure_ready()
         if not ok:
             return message
-        record = await self.media_manager.get_by_id(int(media_id))
+        try:
+            resolved_id = int(str(media_id).strip())
+        except (TypeError, ValueError):
+            return "media_id 无效，请传入数字。"
+        record = await self.media_manager.get_by_id(resolved_id)
         if not record:
             return "媒体不存在。"
         if not self.webui_server:
@@ -486,7 +477,7 @@ class MediaPortalPlugin(Star):
         """向当前会话发送媒体。
 
         Args:
-            media_id_or_query(str): 可传媒体 ID 或搜索关键词。
+            media_id_or_query(string): 可传媒体 ID 或搜索关键词。
         """
         ok, message = await self._ensure_ready()
         if not ok:
@@ -494,18 +485,137 @@ class MediaPortalPlugin(Star):
         record = await self._resolve_record_from_input(media_id_or_query)
         if not record:
             return "未找到可发送的媒体。"
+        file_path = Path(record.abs_path)
+        if not file_path.exists():
+            logger.warning("媒体文件缺失: %s", file_path)
+            if self.webui_server:
+                return (
+                    "媒体文件已丢失，建议 /media scan。"
+                    f" 可尝试 URL: {self.webui_server.build_media_url(record)}"
+                )
+            return "媒体文件已丢失，建议执行 /media scan 修复索引。"
+
+        share_url = self.webui_server.build_media_url(record) if self.webui_server else ""
         try:
             component = self._build_media_component(record)
-            await self.context.send_message(
-                event.unified_msg_origin,
-                MessageChain([component]),
-            )
-            return f"已发送媒体: {self._compact_record(record)}"
+            chain = MessageChain([component])
+            try:
+                await event.send(chain)
+            except Exception as inner_exc:
+                logger.debug("event.send 不可用，回退 context.send_message: %s", inner_exc)
+                await self.context.send_message(event.unified_msg_origin, chain)
+
+            summary = f"已发送媒体: {self._compact_record(record)}"
+            if share_url:
+                summary += f"\n备用直链: {share_url}"
+            return summary
         except Exception as exc:
             logger.warning("发送媒体失败，降级返回 URL: %s", exc)
-            if self.webui_server:
-                return f"发送失败，改用 URL: {self.webui_server.build_media_url(record)}"
+            if share_url:
+                return f"发送失败，改用 URL: {share_url}"
             return f"发送失败: {exc}"
+
+    @llm_tool(name="move_media")
+    async def tool_move_media(
+        self,
+        event: AstrMessageEvent,
+        media_ids: str,
+        category: str,
+    ) -> str:
+        """将一个或多个媒体重分类到目标分类。
+
+        Args:
+            media_ids(string): 媒体 ID，多个使用英文逗号分隔，例如 "12" 或 "12,15,20"。
+            category(string): 目标分类名，不存在时会自动创建。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        target = str(category or "").strip()
+        if not target:
+            return "请提供目标分类。"
+        raw_ids = str(media_ids or "").strip()
+        if not raw_ids:
+            return "请提供至少一个 media_id。"
+        tokens = [tok for tok in raw_ids.replace("，", ",").split(",") if tok.strip()]
+        moved: list[str] = []
+        errors: list[str] = []
+        for token in tokens:
+            try:
+                mid = int(token.strip())
+            except ValueError:
+                errors.append(f"{token}: 非法 ID")
+                continue
+            try:
+                record = await self.media_manager.move_media(mid, target)
+                moved.append(self._compact_record(record))
+            except Exception as exc:
+                errors.append(f"{token}: {exc}")
+        lines: list[str] = []
+        if moved:
+            lines.append(f"已移动 {len(moved)} 个媒体到分类 {target}：")
+            lines.extend(moved)
+        if errors:
+            lines.append("失败：")
+            lines.extend(errors[:10])
+        return "\n".join(lines) if lines else "未处理任何媒体。"
+
+    @llm_tool(name="update_media")
+    async def tool_update_media(
+        self,
+        event: AstrMessageEvent,
+        media_id: str,
+        category: str = "",
+        description: str = "",
+        tags: str = "",
+    ) -> str:
+        """更新媒体的分类 / 描述 / 标签。任一留空即表示不修改该字段。
+
+        Args:
+            media_id(string): 媒体 ID。
+            category(string): 新分类名（留空则不变；指定不存在的分类会自动创建并搬移文件）。
+            description(string): 新描述（留空不变）。
+            tags(string): 新标签，英文逗号分隔；传入 "-" 表示清空。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        try:
+            mid = int(str(media_id).strip())
+        except (TypeError, ValueError):
+            return "media_id 无效。"
+
+        new_category: str | None = category.strip() or None
+        new_description: str | None = None
+        if description:
+            new_description = description.strip()
+        new_tags: list[str] | None = None
+        tags_raw = (tags or "").strip()
+        if tags_raw:
+            if tags_raw == "-":
+                new_tags = []
+            else:
+                new_tags = [
+                    item.strip()
+                    for item in tags_raw.replace("，", ",").split(",")
+                    if item.strip()
+                ]
+
+        if new_category is None and new_description is None and new_tags is None:
+            return "未指定任何可更新字段。"
+
+        try:
+            record = await self.media_manager.update_media(
+                mid,
+                description=new_description,
+                tags=new_tags,
+                category=new_category,
+            )
+        except Exception as exc:
+            return f"更新失败: {exc}"
+        return f"已更新: {self._compact_record(record)}"
 
     async def terminate(self):
         for task in list(self._background_tasks):

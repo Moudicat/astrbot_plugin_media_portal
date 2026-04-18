@@ -9,7 +9,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .utils import ensure_dir, slugify_category
+from .utils import ensure_dir, format_size, slugify_category
 
 
 class CategoryManager:
@@ -149,6 +149,7 @@ class CategoryManager:
                         "description": self._descriptions.get(category, ""),
                         "count": item_count,
                         "size": total_size,
+                        "size_human": format_size(total_size),
                     }
                 )
             return result

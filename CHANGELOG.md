@@ -1,5 +1,20 @@
 # 更新日志
 
+## [0.1.2] - 2026-04-18
+
+### 新增
+- 新增 LLM 工具 `move_media(media_ids, category)` —— 支持批量媒体重分类，目标分类不存在会自动创建；人工操作仍推荐走 WebUI。
+- 新增 LLM 工具 `update_media(media_id, category, description, tags)` —— 统一更新媒体的分类 / 描述 / 标签，`tags` 传 `-` 即清空。
+
+### 修复
+- 修复 `get_media_url` LLM 工具的参数文档缺失，部分 LLM 无法正确传入 `media_id` 的问题；兼容字符串形式的 media_id 入参。
+- 修复 `send_media` 在 WebChat 聊天界面出现裂图的情况
+
+### 优化
+- `/media list` 调整默认条目上限为 10，并在输出末尾显示总数与扩展参数提示；避免一次性吐出全部媒体。
+- 删除与 `/media webui` 功能重复的 `/media password` 子命令，密码可直接在 WebUI 设置页或插件配置中维护。
+- `/media categories` 与 `list_media_categories` 工具输出的分类体积改为人类可读格式（如 `48.9MB`），不再显示裸 `B` 字节数。
+
 ## [0.1.1] - 2026-04-18
 
 ### 新增
