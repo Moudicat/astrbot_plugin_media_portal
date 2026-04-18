@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -144,8 +145,29 @@ class MediaPortalPlugin(Star):
     # WebChat 前端目前只渲染 Plain/Image/Record/File 组件，Video 会被其 _send
     # 静默丢弃，从而表现为工具“已调用但什么都没发”。
     _WEBCHAT_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"video"})
+    _WEBCHAT_IMAGE_SAFE_SUFFIXES: frozenset[str] = frozenset(
+        {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg", ".avif"}
+    )
 
-    def _build_media_component(self, record, platform_name: str = "") -> Any:
+    def _convert_image_for_webchat_sync(self, source: Path) -> Path:
+        temp_dir = self.plugin_data_dir / "temp" / "webchat_compat"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        target = temp_dir / f"webchat_{secrets.token_hex(8)}.png"
+        from PIL import Image, ImageOps
+
+        with Image.open(source) as img:
+            img = ImageOps.exif_transpose(img)
+            if img.mode not in {"RGB", "RGBA"}:
+                if img.mode in {"P", "LA"} or "A" in img.mode:
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGB")
+            img.save(target, "PNG")
+        return target
+
+    async def _build_media_component(
+        self, record, platform_name: str = ""
+    ) -> tuple[Any, Path | None]:
         file_path = Path(record.abs_path)
         kind = record.kind
         platform = str(platform_name or "").strip().lower()
@@ -154,16 +176,50 @@ class MediaPortalPlugin(Star):
             and kind in self._WEBCHAT_UNSUPPORTED_KINDS
             and hasattr(Comp, "File")
         ):
-            return Comp.File(file=str(file_path), name=file_path.name)
+            return Comp.File(file=str(file_path), name=file_path.name), None
         if kind == "image" and hasattr(Comp, "Image"):
-            return Comp.Image.fromFileSystem(str(file_path))
+            if platform != "webchat":
+                return Comp.Image.fromFileSystem(str(file_path)), None
+            suffix = file_path.suffix.lower()
+            if suffix in self._WEBCHAT_IMAGE_SAFE_SUFFIXES:
+                return Comp.Image.fromFileSystem(str(file_path)), None
+            try:
+                compat_path = await asyncio.to_thread(
+                    self._convert_image_for_webchat_sync, file_path
+                )
+                logger.debug(
+                    "webchat 图片兼容转换: %s -> %s", file_path.name, compat_path.name
+                )
+                return Comp.Image.fromFileSystem(str(compat_path)), compat_path
+            except Exception as exc:
+                logger.warning("webchat 图片兼容转换失败，降级文件发送: %s", exc)
+                if hasattr(Comp, "File"):
+                    return Comp.File(file=str(file_path), name=file_path.name), None
+                return Comp.Plain(f"[图片文件] {file_path.name}"), None
         if kind == "video" and hasattr(Comp, "Video"):
-            return Comp.Video.fromFileSystem(str(file_path))
+            return Comp.Video.fromFileSystem(str(file_path)), None
         if kind == "audio" and hasattr(Comp, "Record"):
-            return Comp.Record.fromFileSystem(str(file_path))
+            return Comp.Record.fromFileSystem(str(file_path)), None
         if hasattr(Comp, "File"):
-            return Comp.File(file=str(file_path), name=file_path.name)
-        return Comp.Plain(f"[文件] {file_path.name}")
+            return Comp.File(file=str(file_path), name=file_path.name), None
+        return Comp.Plain(f"[文件] {file_path.name}"), None
+
+    async def _send_chain_with_compatibility(
+        self,
+        event: AstrMessageEvent,
+        chain: MessageChain,
+        *,
+        platform_name: str,
+    ) -> None:
+        platform = str(platform_name or "").strip().lower()
+        if platform == "webchat":
+            await self.context.send_message(event.unified_msg_origin, chain)
+            return
+        try:
+            await event.send(chain)
+        except Exception as inner_exc:
+            logger.debug("event.send 不可用，回退 context.send_message: %s", inner_exc)
+            await self.context.send_message(event.unified_msg_origin, chain)
 
     async def _resolve_record_from_input(self, media_id_or_query: str):
         value = str(media_id_or_query or "").strip()
@@ -519,13 +575,17 @@ class MediaPortalPlugin(Star):
         except Exception:
             platform_name = ""
         try:
-            component = self._build_media_component(record, platform_name=platform_name)
+            component, temp_cleanup_path = await self._build_media_component(
+                record, platform_name=platform_name
+            )
             chain = MessageChain([component])
             try:
-                await event.send(chain)
-            except Exception as inner_exc:
-                logger.debug("event.send 不可用，回退 context.send_message: %s", inner_exc)
-                await self.context.send_message(event.unified_msg_origin, chain)
+                await self._send_chain_with_compatibility(
+                    event, chain, platform_name=platform_name
+                )
+            finally:
+                if temp_cleanup_path and temp_cleanup_path.exists():
+                    temp_cleanup_path.unlink(missing_ok=True)
 
             summary = f"已发送媒体: {self._compact_record(record)}"
             if share_url:
