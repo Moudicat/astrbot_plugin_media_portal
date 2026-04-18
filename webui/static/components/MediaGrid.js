@@ -34,7 +34,6 @@ export const MediaGrid = {
   data() {
     return {
       localQuery: this.query,
-      statsCollapsed: false,
     };
   },
   watch: {
@@ -105,6 +104,17 @@ export const MediaGrid = {
   methods: {
     submitSearch() {
       this.$emit("search", this.localQuery);
+      // 触屏设备上提交后主动失焦以收起虚拟键盘
+      if (this.$refs.searchInput && typeof this.$refs.searchInput.blur === "function") {
+        this.$refs.searchInput.blur();
+      }
+    },
+    clearSearch() {
+      this.localQuery = "";
+      this.$emit("search", "");
+      if (this.$refs.searchInput && typeof this.$refs.searchInput.focus === "function") {
+        this.$refs.searchInput.focus();
+      }
     },
     pickKind(kind) {
       this.$emit("change-kind", kind);
@@ -112,10 +122,7 @@ export const MediaGrid = {
   },
   template: `
     <section style="display: flex; flex-direction: column; gap: 14px">
-      <div
-        class="panel stat-grid"
-        :class="{ 'stat-grid-collapsed': statsCollapsed }"
-      >
+      <div class="panel stat-grid">
         <div
           class="stat-card"
           v-for="card in statCards"
@@ -128,13 +135,6 @@ export const MediaGrid = {
             <strong>{{ card.value }}</strong>
           </div>
         </div>
-        <button
-          class="icon sm stat-toggle mobile-only"
-          @click="statsCollapsed = !statsCollapsed"
-          :title="statsCollapsed ? '展开统计' : '收起统计'"
-        >
-          <Icon :name="statsCollapsed ? 'chevron-down' : 'chevron-up'" :size="14" />
-        </button>
       </div>
 
       <div class="panel" style="display: flex; flex-direction: column; gap: 10px">
@@ -143,11 +143,36 @@ export const MediaGrid = {
             <div class="input-wrap">
               <span class="icon-slot"><Icon name="search" :size="16" /></span>
               <input
+                ref="searchInput"
                 v-model="localQuery"
                 @keyup.enter="submitSearch"
-                placeholder="搜索文件名 / 描述 / 标签，回车确认"
+                type="search"
+                inputmode="search"
+                enterkeyhint="search"
+                autocomplete="off"
+                placeholder="搜索文件名 / 描述 / 标签"
               />
+              <button
+                v-if="localQuery"
+                class="icon sm input-clear"
+                type="button"
+                @click="clearSearch"
+                title="清除搜索"
+                aria-label="清除搜索"
+              >
+                <Icon name="x" :size="14" />
+              </button>
             </div>
+            <button
+              class="primary search-submit"
+              type="button"
+              @click="submitSearch"
+              title="搜索"
+              aria-label="搜索"
+            >
+              <Icon name="search" :size="15" />
+              <span class="hide-mobile">搜索</span>
+            </button>
           </div>
           <div class="toolbar-actions">
             <button class="accent" @click="$emit('open-upload')" title="上传文件 / URL 保存">

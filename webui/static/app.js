@@ -15,16 +15,53 @@ import { UploadProgress } from "./components/UploadProgress.js";
 const { createApp } = Vue;
 
 const THEME_KEY = "media_portal_theme";
+const AUTH_KEY = "media_portal_auth";
 
 function getInitialTheme() {
   try {
     const saved = localStorage.getItem(THEME_KEY);
     if (saved === "light" || saved === "dark") return saved;
     const prefersDark =
-      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
     return prefersDark ? "dark" : "light";
   } catch (_e) {
     return "dark";
+  }
+}
+
+function loadInitialAuth() {
+  try {
+    const raw = localStorage.getItem(AUTH_KEY);
+    if (!raw) return { token: "", readonlyToken: "", dataToken: "" };
+    const data = JSON.parse(raw);
+    return {
+      token: typeof data.token === "string" ? data.token : "",
+      readonlyToken:
+        typeof data.readonlyToken === "string" ? data.readonlyToken : "",
+      dataToken: typeof data.dataToken === "string" ? data.dataToken : "",
+    };
+  } catch (_e) {
+    return { token: "", readonlyToken: "", dataToken: "" };
+  }
+}
+
+function persistAuth(state) {
+  try {
+    if (!state || !state.token) {
+      localStorage.removeItem(AUTH_KEY);
+      return;
+    }
+    localStorage.setItem(
+      AUTH_KEY,
+      JSON.stringify({
+        token: state.token,
+        readonlyToken: state.readonlyToken || "",
+        dataToken: state.dataToken || "",
+      }),
+    );
+  } catch (_e) {
+    // ignore storage errors (隐私模式/配额满等)
   }
 }
 
@@ -45,11 +82,12 @@ createApp({
     UploadProgress,
   },
   data() {
+    const auth = loadInitialAuth();
     return {
       theme: getInitialTheme(),
-      token: "",
-      readonlyToken: "",
-      dataToken: "",
+      token: auth.token,
+      readonlyToken: auth.readonlyToken,
+      dataToken: auth.dataToken,
       loginLoading: false,
       loginError: "",
       loadingMedia: false,
@@ -135,10 +173,10 @@ createApp({
         (type === "success"
           ? "成功"
           : type === "error"
-          ? "出错了"
-          : type === "warning"
-          ? "注意"
-          : "提示");
+            ? "出错了"
+            : type === "warning"
+              ? "注意"
+              : "提示");
       this.toasts.push({ id, text, type, title: displayTitle });
       setTimeout(() => {
         this.toasts = this.toasts.filter((item) => item.id !== id);
@@ -191,7 +229,11 @@ createApp({
     },
     async bootstrap() {
       await this.fetchConfig();
-      await Promise.all([this.fetchCategories(), this.fetchStats(), this.fetchMedia()]);
+      await Promise.all([
+        this.fetchCategories(),
+        this.fetchStats(),
+        this.fetchMedia(),
+      ]);
       if (this.viewMode === "data" && this.canDataBrowse) {
         await this.fetchDataTree("");
       }
@@ -208,8 +250,13 @@ createApp({
         this.token = result.token;
         this.readonlyToken = result.readonly_token || "";
         this.dataToken = result.data_token || "";
+        persistAuth({
+          token: this.token,
+          readonlyToken: this.readonlyToken,
+          dataToken: this.dataToken,
+        });
         await this.bootstrap();
-        this.notify("欢迎回来 Astrbot Media Portal", "success");
+        this.notify("欢迎回来 Media Portal", "success");
       } catch (error) {
         this.loginError = error.message;
       } finally {
@@ -227,6 +274,7 @@ createApp({
       this.token = "";
       this.readonlyToken = "";
       this.dataToken = "";
+      persistAuth(null);
       this.categories = [];
       this.mediaItems = [];
       this.mediaStats = {};
@@ -241,7 +289,8 @@ createApp({
     },
     async fetchConfig() {
       const data = await this.request("/api/config");
-      const maxMb = Number(data.max_file_size_mb) > 0 ? Number(data.max_file_size_mb) : 500;
+      const maxMb =
+        Number(data.max_file_size_mb) > 0 ? Number(data.max_file_size_mb) : 500;
       const maxBytes =
         Number(data.max_file_size_bytes) > 0
           ? Number(data.max_file_size_bytes)
@@ -356,7 +405,7 @@ createApp({
         return;
       }
       this.playerList = this.mediaItems.filter(
-        (entry) => entry && entry.kind !== "audio"
+        (entry) => entry && entry.kind !== "audio",
       );
       this.playerSource = "media";
       this.playerItem = item;
@@ -375,7 +424,7 @@ createApp({
       if (!list.length) return;
       const currentKey = this.playerIdentity(this.playerItem);
       let idx = list.findIndex(
-        (entry) => this.playerIdentity(entry) === currentKey
+        (entry) => this.playerIdentity(entry) === currentKey,
       );
       if (idx < 0) idx = 0;
       const nextIdx = (idx + delta + list.length) % list.length;
@@ -402,7 +451,11 @@ createApp({
         });
         this.notify("已更新媒体信息", "success");
         this.selectedMedia = updated;
-        await Promise.all([this.fetchCategories(), this.fetchMedia(), this.fetchStats()]);
+        await Promise.all([
+          this.fetchCategories(),
+          this.fetchMedia(),
+          this.fetchStats(),
+        ]);
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -414,14 +467,21 @@ createApp({
         this.notify("媒体已删除", "success");
         this.drawerVisible = false;
         this.selectedMedia = null;
-        await Promise.all([this.fetchMedia(), this.fetchCategories(), this.fetchStats()]);
+        await Promise.all([
+          this.fetchMedia(),
+          this.fetchCategories(),
+          this.fetchStats(),
+        ]);
       } catch (error) {
         this.notify(error.message, "error");
       }
     },
     async batchDelete() {
       if (!this.selectedIds.length) return;
-      if (!window.confirm(`确认删除选中的 ${this.selectedIds.length} 个媒体吗？`)) return;
+      if (
+        !window.confirm(`确认删除选中的 ${this.selectedIds.length} 个媒体吗？`)
+      )
+        return;
       let success = 0;
       for (const id of this.selectedIds) {
         try {
@@ -433,10 +493,14 @@ createApp({
       }
       this.notify(
         `批量删除完成：成功 ${success} / ${this.selectedIds.length}`,
-        success === this.selectedIds.length ? "success" : "warning"
+        success === this.selectedIds.length ? "success" : "warning",
       );
       this.selectedIds = [];
-      await Promise.all([this.fetchMedia(), this.fetchCategories(), this.fetchStats()]);
+      await Promise.all([
+        this.fetchMedia(),
+        this.fetchCategories(),
+        this.fetchStats(),
+      ]);
     },
     async createCategory(payload) {
       try {
@@ -452,20 +516,37 @@ createApp({
       }
     },
     async pruneCategories() {
-      if (!window.confirm("将清理所有无媒体、空目录的分类（保留 default），是否继续？")) return;
+      if (
+        !window.confirm(
+          "将清理所有无媒体、空目录的分类（保留 default），是否继续？",
+        )
+      )
+        return;
       try {
-        const result = await this.request("/api/categories/prune", { method: "POST" });
+        const result = await this.request("/api/categories/prune", {
+          method: "POST",
+        });
         const count = result.removed_count || 0;
         if (count > 0) {
           const names = (result.removed || []).join("、");
-          this.notify(`已清理 ${count} 个空分类${names ? "：" + names : ""}`, "success");
-          if (this.filters.category && (result.removed || []).includes(this.filters.category)) {
+          this.notify(
+            `已清理 ${count} 个空分类${names ? "：" + names : ""}`,
+            "success",
+          );
+          if (
+            this.filters.category &&
+            (result.removed || []).includes(this.filters.category)
+          ) {
             this.filters.category = "";
           }
         } else {
           this.notify("没有需要清理的空分类", "info");
         }
-        await Promise.all([this.fetchCategories(), this.fetchStats(), this.fetchMedia()]);
+        await Promise.all([
+          this.fetchCategories(),
+          this.fetchStats(),
+          this.fetchMedia(),
+        ]);
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -488,7 +569,7 @@ createApp({
         const names = rejected.map((f) => f.name).join("、");
         this.notify(
           `已跳过 ${rejected.length} 个超过 ${maxMb}MB 的文件：${names}`,
-          "warning"
+          "warning",
         );
       }
       if (!accepted.length) return;
@@ -539,7 +620,7 @@ createApp({
         current.loaded = event.loaded;
         current.progress = Math.min(
           100,
-          Math.round((event.loaded / event.total) * 100)
+          Math.round((event.loaded / event.total) * 100),
         );
       });
       xhr.upload.addEventListener("load", () => {
@@ -561,7 +642,9 @@ createApp({
         }
         if (xhr.status >= 200 && xhr.status < 300 && payload) {
           const savedList = Array.isArray(payload.saved) ? payload.saved : [];
-          const errorsList = Array.isArray(payload.errors) ? payload.errors : [];
+          const errorsList = Array.isArray(payload.errors)
+            ? payload.errors
+            : [];
           if (savedList.length) {
             current.status = "done";
             current.progress = 100;
@@ -617,7 +700,8 @@ createApp({
           return;
         }
         const hasError = this.uploadJobs.some(
-          (job) => job && (job.status === "error" || job.status === "cancelled")
+          (job) =>
+            job && (job.status === "error" || job.status === "cancelled"),
         );
         if (hasError) return;
         this.uploadJobs = [];
@@ -664,7 +748,7 @@ createApp({
     },
     clearFinishedUploads() {
       this.uploadJobs = this.uploadJobs.filter(
-        (item) => item.status === "uploading"
+        (item) => item.status === "uploading",
       );
       if (!this.uploadJobs.length) {
         this.uploadPanelOpen = false;
@@ -680,7 +764,11 @@ createApp({
           body: payload,
         });
         this.notify("远程媒体已保存", "success");
-        await Promise.all([this.fetchMedia(), this.fetchCategories(), this.fetchStats()]);
+        await Promise.all([
+          this.fetchMedia(),
+          this.fetchCategories(),
+          this.fetchStats(),
+        ]);
       } catch (error) {
         this.notify(error.message, "error");
       }
@@ -696,7 +784,9 @@ createApp({
     shareAbsoluteUrl(url) {
       if (!url) return "";
       if (/^https?:\/\//i.test(url)) return url;
-      const base = String(this.config.public_base_url || "").trim() || window.location.origin;
+      const base =
+        String(this.config.public_base_url || "").trim() ||
+        window.location.origin;
       try {
         return new URL(url, base).toString();
       } catch (_e) {
@@ -791,7 +881,11 @@ createApp({
     },
     openDataFile(item) {
       const directUrl = this.dataFileUrl(item.path);
-      if (item.kind === "image" || item.kind === "video" || item.kind === "audio") {
+      if (
+        item.kind === "image" ||
+        item.kind === "video" ||
+        item.kind === "audio"
+      ) {
         const previewItem = { ...item, directUrl, filename: item.name };
         if (item.kind === "audio") {
           this.audioDockItem = previewItem;
@@ -803,7 +897,7 @@ createApp({
           (entry) =>
             entry &&
             !entry.is_dir &&
-            (entry.kind === "image" || entry.kind === "video")
+            (entry.kind === "image" || entry.kind === "video"),
         );
         this.playerSource = "data";
         this.playerItem = previewItem;
@@ -844,7 +938,9 @@ createApp({
           content: data.content || "",
           truncated: !!data.truncated,
           encoding: data.encoding || "",
-          downloadUrl: this.dataFileUrl(data.path || item.path, { download: true }),
+          downloadUrl: this.dataFileUrl(data.path || item.path, {
+            download: true,
+          }),
         };
       } catch (error) {
         this.notify(error.message, "error");
@@ -913,10 +1009,10 @@ createApp({
             </button>
             <div class="brand">
               <div class="brand-logo brand-logo-img">
-                <img src="/static/logo.svg" alt="Astrbot Media Portal" />
+                <img src="/static/logo.svg" alt="Media Portal" />
               </div>
               <div class="brand-text">
-                <strong>Astrbot Media Portal</strong>
+                <strong>Media Portal</strong>
                 <small>多媒体管理控制台</small>
               </div>
             </div>

@@ -26,7 +26,7 @@ export const LoginView = {
       <div class="login-card">
         <div class="login-brand">
           <div class="brand-logo brand-logo-img">
-            <img src="/static/logo.svg" alt="Astrbot Media Portal" />
+            <img src="/static/logo.svg" alt="Media Portal" />
           </div>
           <div>
             <h1>Media Portal</h1>

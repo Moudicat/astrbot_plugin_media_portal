@@ -9,6 +9,8 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 [![Repo](https://img.shields.io/badge/GitHub-Moudicat%2Fastrbot__plugin__media__portal-black)](https://github.com/Moudicat/astrbot_plugin_media_portal)
 
+[![Moe Counter](https://count.getloli.com/get/@astrbot_plugin_media_portal?theme=moebooru)](https://github.com/moudicat/astrbot_plugin_media_portal)
+
 </div>
 
 一个面向 **AI + 人工协作** 的 AstrBot 多媒体管理插件。  
@@ -27,6 +29,7 @@
   - [🖥️ WebUI 说明](#️-webui-说明)
   - [❓ 常见问题](#-常见问题)
   - [🔒 安全建议](#-安全建议)
+  - [🧪 独立调试 WebUI](#-独立调试-webui)
   - [📚 开发参考](#-开发参考)
 
 ## 🚀 功能特点
@@ -174,6 +177,45 @@ A：可以，只读模式。可通过 `webui.expose_astrbot_data` 控制开关�
 2. 若开放公网访问，请配合反向代理与 HTTPS；
 3. 分享链接已带过期时间，但仍建议最小化转发范围并定期轮换密码；
 4. 建议限制上传/下载来源并定期清理历史媒体。
+
+## 🧪 独立调试 WebUI
+
+不启动 AstrBot 主程序也可以单独跑 WebUI。仓库内提供了 `scripts/debug_webui.py`，它会在运行时注入 `astrbot.*` 的最小 shim 模块、手动装配 `MediaManager/CategoryManager`，然后启动完整 FastAPI 应用。
+
+```bash
+# 在插件根目录执行
+pip install -r requirements.txt
+
+# 默认 127.0.0.1:7003 / 密码 admin123 / 数据落在 ./.devdata/
+python scripts/debug_webui.py
+
+# 自定义端口 & 密码 & 开放局域网 & 开启 /data 只读浏览
+python scripts/debug_webui.py --host 0.0.0.0 --port 8080 --password mypass --expose-data
+
+# 开启 Python 代码热重载（需 pip install watchfiles）
+python scripts/debug_webui.py --reload
+```
+
+关键点：
+
+- **前端静态文件（`webui/static/`）热生效**：修改 `index.html` / `app.js` / `styles.css` / `components/*` 后，浏览器刷新即可看到新版本，无需重启服务；
+- **Python 代码改动**：默认需要 `Ctrl+C` 后重跑；加 `--reload` 即可在 `core/` 与 `webui/` 变更时自动重启；
+- **调试数据隔离**：默认落在插件根目录下 `./.devdata/`（已写入 `.gitignore`），可随时删除以复位；或用 `--data-dir` / `--astrbot-data` 指定其他位置；
+- **不依赖 AstrBot 运行时**：脚本只提供 `logger` 占位等最小依赖，仅用于本地调试；生产仍请通过 AstrBot 正常加载插件。
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--host` / `--port` | 监听地址 / 端口 |
+| `--password` | 访问密码（默认 `admin123`，仅供本地） |
+| `--data-dir` | 自定义插件数据根（放 `index.db` / `categories.json` / `media/`） |
+| `--astrbot-data` | 模拟的 AstrBot `data/` 目录（配合 `--expose-data` 测试 Data 浏览） |
+| `--expose-data` | 打开 `/api/data-*` 及 Data 页面（只读） |
+| `--public-base-url` | 反代/公开域名，用于生成分享链接 |
+| `--session-timeout` | 登录会话秒数（默认 86400，调试期偏长） |
+| `--allowed-origins` | CORS 白名单（逗号分隔） |
+| `--reload` | 启用 Python 代码热重载（依赖 watchfiles） |
 
 ## 📚 开发参考
 

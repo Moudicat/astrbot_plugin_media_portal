@@ -130,24 +130,29 @@ export const MediaDrawer = {
             </div>
 
             <div class="drawer-actions">
-              <button class="primary" @click="save">
+              <button class="primary drawer-action-primary" @click="save">
                 <Icon name="save" :size="15" /> 保存
               </button>
-              <button @click="$emit('copy-link', media.id)">
-                <Icon name="link-2" :size="15" /> 复制链接
-              </button>
-              <a
-                :href="fileUrl"
-                target="_blank"
-                rel="noopener"
-                class="btn"
-                style="text-decoration: none"
-              >
-                <Icon name="external-link" :size="15" /> 打开
-              </a>
-              <button class="danger" @click="$emit('delete', media.id)">
-                <Icon name="trash-2" :size="15" /> 删除
-              </button>
+              <div class="drawer-action-row">
+                <button class="drawer-action-sub" @click="$emit('copy-link', media.id)">
+                  <Icon name="link-2" :size="15" />
+                  <span>复制链接</span>
+                </button>
+                <a
+                  :href="fileUrl"
+                  target="_blank"
+                  rel="noopener"
+                  class="btn drawer-action-sub"
+                  style="text-decoration: none"
+                >
+                  <Icon name="external-link" :size="15" />
+                  <span>打开</span>
+                </a>
+                <button class="danger drawer-action-sub" @click="$emit('delete', media.id)">
+                  <Icon name="trash-2" :size="15" />
+                  <span>删除</span>
+                </button>
+              </div>
             </div>
           </div>
         </aside>
