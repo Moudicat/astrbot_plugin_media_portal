@@ -494,7 +494,7 @@ class MediaPortalPlugin(Star):
         limit: int = 5,
         category: str = "",
     ) -> str:
-        """搜索媒体文件。
+        """在媒体库中搜索媒体文件。
 
         Args:
             query(str): 文件名/描述关键词。
@@ -523,7 +523,7 @@ class MediaPortalPlugin(Star):
         event: AstrMessageEvent,
         media_id: str,
     ) -> str:
-        """获取媒体公开访问 URL。
+        """从媒体库获取媒体公开访问 URL。
 
         Args:
             media_id(string): 媒体 ID（数字字符串，例如 "12"）。
@@ -547,10 +547,12 @@ class MediaPortalPlugin(Star):
     async def tool_send_media(
         self, event: AstrMessageEvent, media_id_or_query: str
     ) -> str:
-        """向当前会话发送媒体。
+        """向当前会话发送媒体库中的媒体 （不是通用文件发送）
+
+        仅接受媒体 ID 或关键词；拒绝本地路径与 URL。
 
         Args:
-            media_id_or_query(string): 可传媒体 ID 或搜索关键词。
+            media_id_or_query(string): 可传媒体 ID 或搜索关键词，不允许本地路径/URL。
         """
         ok, message = await self._ensure_ready()
         if not ok:
