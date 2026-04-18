@@ -64,7 +64,7 @@
 <details>
 <summary><strong>从媒体库读取/发送</strong></summary>
 <br />
-https://github.com/user-attachments/assets/2e043acb-744f-48ce-a48e-4eeb7b8b63b7
+<img width="1200" height="1246" alt="136aeefd05caa91b52ebb7b2fb34f560" src="https://github.com/user-attachments/assets/58243bc1-db22-4603-a3e6-32df5f23cddd" />
 </details>
 
 ## 📦 安装方式
