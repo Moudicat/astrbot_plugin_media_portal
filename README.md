@@ -45,6 +45,15 @@
 | 🔍 Data 资源浏览 | 只读浏览 AstrBot `/data` 目录，支持图片/视频/音频预览 |
 | 🔐 安全控制 | 登录限流、媒体只读 token、路径越界防护、体积限制 |
 
+## 🖼️ 截图
+
+<img width="1274" height="981" alt="085251bc35b6c5aa4d7c2304d81839e6" src="https://github.com/user-attachments/assets/a9184815-114b-458b-be5c-8cb32c634e95" />
+
+
+<img width="735" height="90" alt="image" src="https://github.com/user-attachments/assets/9d952ca5-f216-4491-aed1-4158bf87f259" />
+<img width="904" height="535" alt="image" src="https://github.com/user-attachments/assets/f4d2faef-6b78-4cb2-9d37-212b56a77c1d" />
+
+
 ## 📦 安装方式
 
 1. 将插件放入 AstrBot 插件目录；
