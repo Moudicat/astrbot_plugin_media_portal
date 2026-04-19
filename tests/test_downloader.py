@@ -30,6 +30,52 @@ def test_parse_source_rejects_empty_text(tmp_path: Path) -> None:
         downloader.parse_source("")
 
 
+def test_parse_source_rejects_local_when_flag_disabled(tmp_path: Path) -> None:
+    downloader = MediaDownloader(
+        temp_dir=tmp_path / "temp",
+        max_file_size_mb=5,
+        allow_local_path_source=False,
+    )
+    local_file = tmp_path / "x.png"
+    local_file.write_bytes(b"x")
+    with pytest.raises(ValueError, match="仅支持 URL"):
+        downloader.parse_source(str(local_file))
+
+
+def test_parse_source_respects_local_path_whitelist(tmp_path: Path) -> None:
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    allowed_file = allowed_dir / "in.png"
+    allowed_file.write_bytes(b"in")
+    outside_file = tmp_path / "out.png"
+    outside_file.write_bytes(b"out")
+
+    downloader = MediaDownloader(
+        temp_dir=tmp_path / "temp",
+        max_file_size_mb=5,
+        local_path_whitelist=[str(allowed_dir)],
+    )
+
+    parsed = downloader.parse_source(str(allowed_file))
+    assert parsed.source_type == "local"
+    assert parsed.value == str(allowed_file.resolve())
+
+    with pytest.raises(ValueError, match="白名单"):
+        downloader.parse_source(str(outside_file))
+
+
+def test_parse_source_empty_whitelist_rejects_all_local_paths(tmp_path: Path) -> None:
+    downloader = MediaDownloader(
+        temp_dir=tmp_path / "temp",
+        max_file_size_mb=5,
+        local_path_whitelist=[],
+    )
+    local_file = tmp_path / "any.png"
+    local_file.write_bytes(b"x")
+    with pytest.raises(ValueError, match="白名单"):
+        downloader.parse_source(str(local_file))
+
+
 def test_parse_local_value_supports_file_uri(tmp_path: Path) -> None:
     downloader = MediaDownloader(temp_dir=tmp_path / "temp", max_file_size_mb=5)
     local_file = tmp_path / "song.mp3"

@@ -15,6 +15,8 @@ from urllib.parse import unquote, urljoin, urlparse
 import aiofiles
 import aiohttp
 
+from astrbot.api import logger
+
 from .utils import ensure_dir, guess_filename_from_url, sanitize_filename, unique_path
 
 
@@ -93,10 +95,54 @@ class MediaDownloader:
         temp_dir: Path,
         max_file_size_mb: int = 50,
         allow_local_path_source: bool = True,
+        local_path_whitelist: list[str] | tuple[str, ...] | None = None,
     ):
         self.temp_dir = ensure_dir(temp_dir)
         self.max_file_size = max_file_size_mb * 1024 * 1024
         self.allow_local_path_source = bool(allow_local_path_source)
+        # ``None`` 表示不启用白名单（向后兼容 / 非生产场景）；
+        # 传入列表或元组（含空 ``[]``）则进入强制白名单模式，空列表 = 全部拒绝。
+        if local_path_whitelist is None:
+            self._whitelist_enforced: bool = False
+            self._local_path_whitelist: tuple[Path, ...] = ()
+        else:
+            self._whitelist_enforced = True
+            self._local_path_whitelist = self._normalize_whitelist(local_path_whitelist)
+
+    @staticmethod
+    def _normalize_whitelist(
+        entries: list[str] | tuple[str, ...],
+    ) -> tuple[Path, ...]:
+        resolved: list[Path] = []
+        seen: set[str] = set()
+        for entry in entries:
+            text = str(entry or "").strip()
+            if not text:
+                continue
+            try:
+                candidate = Path(text).expanduser().resolve()
+            except Exception as exc:  # pragma: no cover - 仅极端路径会抛
+                logger.warning("本地路径白名单条目解析失败 %r: %s", text, exc)
+                continue
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved.append(candidate)
+        return tuple(resolved)
+
+    def _is_local_path_allowed(self, path: Path) -> bool:
+        if not self._whitelist_enforced:
+            return True
+        if not self._local_path_whitelist:
+            return False
+        for allowed in self._local_path_whitelist:
+            try:
+                if path == allowed or path.is_relative_to(allowed):
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
 
     @staticmethod
     def is_http_url(value: str) -> bool:
@@ -114,6 +160,10 @@ class MediaDownloader:
                 "出于安全考虑，source 参数仅支持 URL；本地文件请通过消息附件上传。"
             )
         path = Path(src).expanduser().resolve()
+        if not self._is_local_path_allowed(path):
+            raise ValueError(
+                "本地路径不在白名单范围内；请联系管理员在 downloader.local_path_whitelist 中追加该目录。"
+            )
         return MediaSource(source_type="local", value=str(path), filename_hint=path.name)
 
     @staticmethod

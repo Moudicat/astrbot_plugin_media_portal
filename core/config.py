@@ -147,11 +147,18 @@ class StorageSettings:
     location_mode: str = "plugin_data"
 
 
+_DEFAULT_LOCAL_PATH_WHITELIST: tuple[str, ...] = ("/workspaces", "/temp")
+
+
 @dataclass(slots=True)
 class DownloaderSettings:
     max_file_size_mb: int = 500
     allowed_kinds: set[str] = field(default_factory=lambda: {"image", "video", "audio"})
     default_move_local: bool = True
+    allow_local_path_source: bool = True
+    local_path_whitelist: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_LOCAL_PATH_WHITELIST)
+    )
 
 
 @dataclass(slots=True)
@@ -234,10 +241,19 @@ def load_plugin_settings(
             or "plugin_data"
         ),
     )
+    raw_whitelist = downloader_raw.get("local_path_whitelist")
+    if raw_whitelist is None:
+        local_path_whitelist = list(_DEFAULT_LOCAL_PATH_WHITELIST)
+    else:
+        local_path_whitelist = _as_str_list(raw_whitelist)
     downloader = DownloaderSettings(
         max_file_size_mb=_as_int(downloader_raw.get("max_file_size_mb"), 500, minimum=1),
         allowed_kinds=_parse_allowed_kinds(downloader_raw.get("allowed_kinds")),
         default_move_local=_as_bool(downloader_raw.get("default_move_local"), True),
+        allow_local_path_source=_as_bool(
+            downloader_raw.get("allow_local_path_source"), True
+        ),
+        local_path_whitelist=local_path_whitelist,
     )
 
     astrbot_data_dir = Path(get_astrbot_data_path()).resolve()

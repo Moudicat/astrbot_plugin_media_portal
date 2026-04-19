@@ -110,6 +110,21 @@
         "type": "bool",
         "default": true,
         "hint": "开启时 save_media(local_path) 默认使用移动（mv）而非拷贝。"
+      },
+      "allow_local_path_source": {
+        "description": "允许 save_media 接受本地文件路径",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 save_media 的 source 参数仅支持 URL，本地文件必须通过消息附件上传；开启时 LLM 可通过 source 参数传入服务器本地绝对路径，请结合下方白名单限制允许的目录。"
+      },
+      "local_path_whitelist": {
+        "description": "本地路径白名单（目录前缀）",
+        "type": "list",
+        "default": [
+          "/workspaces",
+          "/temp"
+        ],
+        "hint": "仅当 allow_local_path_source=true 时生效。save_media 的 source 参数必须位于列表中任一目录（或其子目录）下，否则拒绝。列表置空等同于禁止本地路径。路径支持 ~ 展开，Windows 也可填 D:/data 这类绝对路径。"
       }
     }
   }

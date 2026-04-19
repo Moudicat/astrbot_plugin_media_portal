@@ -44,7 +44,8 @@ class MediaPortalPlugin(Star):
         self.downloader = MediaDownloader(
             temp_dir=self.plugin_data_dir / "temp",
             max_file_size_mb=self.settings.downloader.max_file_size_mb,
-            allow_local_path_source=False,
+            allow_local_path_source=self.settings.downloader.allow_local_path_source,
+            local_path_whitelist=self.settings.downloader.local_path_whitelist,
         )
         self.media_manager = MediaManager(
             media_root=self.settings.media_root,
@@ -443,12 +444,12 @@ class MediaPortalPlugin(Star):
         """保存媒体到媒体库。
 
         Args:
-            source(str): 媒体来源 URL（仅支持 http/https）。留空时从当前消息附件提取。
-                出于安全考虑，**不接受本地文件路径**；请将本地文件作为附件发送。
+            source(str): 媒体来源；支持 URL、本地文件路径。留空时从当前消息附件提取。
             category(str): 分类名。
             description(str): 描述。
             filename(str): 自定义文件名（可选）。
-            move(bool): 从消息附件保存时是否移动源文件（true=mv，false=copy）。
+            move(bool): 从本地路径或消息附件保存时是否移动源文件（true=mv，false=copy）；
+                URL 来源不受此参数影响。
         """
 
         ok, message = await self._ensure_ready()
