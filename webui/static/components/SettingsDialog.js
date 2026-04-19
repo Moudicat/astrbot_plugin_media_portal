@@ -21,6 +21,9 @@ export const SettingsDialog = {
     visible: { type: Boolean, default: false },
     categories: { type: Array, default: () => [] },
   },
+  inject: {
+    appConfirm: { from: "confirm", default: null },
+  },
   emits: ["close", "rename-category", "delete-category", "prune-categories"],
   data() {
     return deriveState(this.categories);
@@ -107,14 +110,28 @@ export const SettingsDialog = {
       this.$emit("rename-category", payload);
       this.cancelEdit();
     },
-    confirmDelete(item) {
+    async confirmDelete(item) {
       if (!item || item.category === "default") return;
       const count = Number(item.count || 0);
-      const text =
+      const message =
         count > 0
-          ? `分类「${item.category}」下还有 ${count} 个媒体，删除会一并移除这些文件，是否继续？`
+          ? `分类「${item.category}」下还有 ${count} 个媒体，删除将一并清理。`
           : `确认删除分类「${item.category}」？`;
-      if (!window.confirm(text)) return;
+      const detail =
+        count > 0
+          ? "所有归属该分类的媒体记录与文件会被移除，无法撤销。"
+          : "";
+      const ok = this.appConfirm
+        ? await this.appConfirm({
+            title: "删除分类",
+            message,
+            detail,
+            confirmText: "删除分类",
+            tone: "danger",
+            icon: "trash-2",
+          })
+        : window.confirm(message);
+      if (!ok) return;
       this.deleting = item.category;
       this.$emit("delete-category", {
         category: item.category,

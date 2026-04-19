@@ -195,7 +195,7 @@ def _resolve_dev_paths(data_dir: str, astrbot_data: str) -> tuple[Path, Path]:
     return plugin_data, astrbot_data_path
 
 
-async def _assemble_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
+def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
     plugin_data, astrbot_data = _resolve_dev_paths(args.data_dir, args.astrbot_data)
     os.environ["MP_DEBUG_ASTRBOT_DATA"] = str(astrbot_data)
 
@@ -227,9 +227,6 @@ async def _assemble_server(args: argparse.Namespace) -> tuple[WebUIServer, Media
         max_file_size_mb=settings.downloader.max_file_size_mb,
         default_move_local=settings.downloader.default_move_local,
     )
-    await media_manager.initialize()
-    await media_manager.ensure_scanned()
-
     server = WebUIServer(
         media_manager=media_manager,
         category_manager=category_manager,
@@ -237,6 +234,11 @@ async def _assemble_server(args: argparse.Namespace) -> tuple[WebUIServer, Media
         data_root=settings.astrbot_data_dir,
     )
     return server, media_manager
+
+
+async def _prepare_server(media_manager: MediaManager) -> None:
+    await media_manager.initialize()
+    await media_manager.ensure_scanned()
 
 
 def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
@@ -268,7 +270,8 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
 
 
 async def _run_forever(args: argparse.Namespace) -> None:
-    server, media_manager = await _assemble_server(args)
+    server, media_manager = _build_server(args)
+    await _prepare_server(media_manager)
     _print_banner(server, args)
     await server.start()
     stop_event = asyncio.Event()
@@ -303,28 +306,29 @@ def _args_from_env() -> argparse.Namespace:
 def create_app():
     """uvicorn 工厂函数，供 ``--reload`` 模式使用。"""
     args = _args_from_env()
-
-    loop = asyncio.new_event_loop()
-    try:
-        server, media_manager = loop.run_until_complete(_assemble_server(args))
-    finally:
-        loop.close()
+    server, media_manager = _build_server(args)
 
     app = server.app
     _print_banner(server, args)
 
-    @app.on_event("startup")
-    async def _on_startup() -> None:
-        server._cleanup_task = asyncio.create_task(server._periodic_cleanup())
+    previous_lifespan = app.router.lifespan_context
 
-    @app.on_event("shutdown")
-    async def _on_shutdown() -> None:
-        task = getattr(server, "_cleanup_task", None)
-        if task and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-        await media_manager.close()
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app):
+        async with previous_lifespan(_app):
+            await _prepare_server(media_manager)
+            server._cleanup_task = asyncio.create_task(server._periodic_cleanup())
+            try:
+                yield
+            finally:
+                task = getattr(server, "_cleanup_task", None)
+                if task and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                await media_manager.close()
+
+    app.router.lifespan_context = _lifespan
 
     return app
 

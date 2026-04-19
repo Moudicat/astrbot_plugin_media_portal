@@ -81,9 +81,13 @@ def _normalize_base_url(url: str) -> str:
         parsed = urlparse(normalized)
     except Exception:  # pragma: no cover - urlparse 极少抛错
         parsed = None
-    if parsed is not None and parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
+    if parsed is None:
+        return ""
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
         logger.warning(
-            "public_base_url 的协议 %r 非 http/https，已忽略该配置。", parsed.scheme
+            "public_base_url %r 不是完整的 http/https URL，已忽略该配置。",
+            normalized,
         )
         return ""
     return normalized.rstrip("/")

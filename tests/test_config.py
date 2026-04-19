@@ -107,6 +107,20 @@ def test_load_plugin_settings_supports_legacy_webui_port(
     assert settings.webui.enabled is False
 
 
+def test_load_plugin_settings_rejects_non_absolute_public_base_url(
+    tmp_path: Path, monkeypatch
+) -> None:
+    astrbot_data = (tmp_path / "astrbot_data").resolve()
+    monkeypatch.setattr(config_mod, "get_astrbot_data_path", lambda: str(astrbot_data))
+
+    settings = config_mod.load_plugin_settings(
+        {"webui": {"public_base_url": "//evil.example.com/share"}},
+        plugin_data_dir=tmp_path / "plugin_data",
+    )
+
+    assert settings.webui.public_base_url == ""
+
+
 def test_load_plugin_settings_downloader_allowed_kinds_string(
     tmp_path: Path, monkeypatch
 ) -> None:

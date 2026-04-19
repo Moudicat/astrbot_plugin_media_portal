@@ -27,7 +27,7 @@ from .webui import WebUIServer
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.1.3",
+    "0.2.0",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -58,9 +58,9 @@ class MediaPortalPlugin(Star):
         self.webui_server: WebUIServer | None = None
 
         self._background_tasks: set[asyncio.Task] = set()
+        self._bootstrap_task: asyncio.Task | None = None
         self._init_lock = asyncio.Lock()
         self._initialized = False
-        self._create_tracked_task(self._bootstrap())
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
@@ -68,6 +68,8 @@ class MediaPortalPlugin(Star):
 
         def _on_done(done_task: asyncio.Task) -> None:
             self._background_tasks.discard(done_task)
+            if done_task is self._bootstrap_task:
+                self._bootstrap_task = None
             try:
                 done_task.result()
             except asyncio.CancelledError:
@@ -77,6 +79,20 @@ class MediaPortalPlugin(Star):
 
         task.add_done_callback(_on_done)
         return task
+
+    def _schedule_bootstrap(self) -> None:
+        if self._initialized:
+            return
+        if self._bootstrap_task and not self._bootstrap_task.done():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._bootstrap_task = self._create_tracked_task(self._bootstrap())
+
+    async def on_astrbot_loaded(self) -> None:
+        self._schedule_bootstrap()
 
     async def _bootstrap(self) -> None:
         async with self._init_lock:

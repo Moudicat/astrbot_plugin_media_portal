@@ -482,3 +482,30 @@ def test_tool_save_media_branches() -> None:
         assert "已保存: id=3" in by_local
 
     asyncio.run(scenario())
+
+
+def test_plugin_init_defers_bootstrap_until_async_context(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from astrbot.api.star import Context, StarTools
+
+    monkeypatch.setattr(
+        StarTools,
+        "get_data_dir",
+        staticmethod(lambda: str((tmp_path / "plugin_data").resolve())),
+    )
+    plugin = MediaPortalPlugin(Context(), config={})
+    assert plugin._bootstrap_task is None
+
+    async def fake_bootstrap():
+        plugin._initialized = True
+
+    plugin._bootstrap = fake_bootstrap  # type: ignore[assignment]
+
+    async def scenario() -> None:
+        await plugin.on_astrbot_loaded()
+        await asyncio.sleep(0)
+        assert plugin._initialized is True
+        assert plugin._bootstrap_task is None or plugin._bootstrap_task.done()
+
+    asyncio.run(scenario())

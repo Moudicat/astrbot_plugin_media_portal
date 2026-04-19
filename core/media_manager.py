@@ -74,9 +74,8 @@ class MediaManager:
         self.db_path = self.plugin_data_dir / "index.db"
         self._conn: aiosqlite.Connection | None = None
         self._db_lock = asyncio.Lock()
-        # 保护 "去重查询 + 落盘 + 索引写入" 这一段 check-then-act 的原子性，
-        # 避免并发请求同一文件时重复写入 SHA256 索引记录。
-        self._save_lock = asyncio.Lock()
+        # 串行化所有会同时修改磁盘与索引的写操作，避免事务与文件变更交叉。
+        self._write_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         async with self._db_lock:
@@ -191,8 +190,11 @@ class MediaManager:
         sender_id: str = "",
         description: str = "",
         tags: list[str] | None = None,
+        conn: aiosqlite.Connection | None = None,
+        commit: bool = True,
     ) -> MediaRecord:
-        conn = await self._ensure_conn()
+        if conn is None:
+            conn = await self._ensure_conn()
         created_at = now_ts()
         tags_json = json.dumps(tags or [], ensure_ascii=False)
         cursor = await conn.execute(
@@ -218,7 +220,8 @@ class MediaManager:
                 created_at,
             ),
         )
-        await conn.commit()
+        if commit:
+            await conn.commit()
         media_id = int(cursor.lastrowid)
         return MediaRecord(
             id=media_id,
@@ -392,6 +395,33 @@ class MediaManager:
         target = unique_path(target_dir / candidate)
         return normalized, target
 
+    @staticmethod
+    async def _begin_write_transaction(conn: aiosqlite.Connection) -> None:
+        await conn.execute("BEGIN IMMEDIATE")
+
+    @staticmethod
+    def _cleanup_temp_path(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _rollback_saved_target(target: Path, source: Path, *, should_move: bool) -> None:
+        if not target.exists():
+            return
+        if should_move:
+            if source.exists():
+                logger.warning(
+                    "回滚媒体文件失败：源路径已存在，保留目标文件 %s -> %s",
+                    target,
+                    source,
+                )
+                return
+            shutil.move(str(target), str(source))
+            return
+        target.unlink(missing_ok=True)
+
     async def save_from_local_path(
         self,
         src_path: str,
@@ -417,8 +447,7 @@ class MediaManager:
         source_hash = file_sha256(source)
         should_move = self.default_move_local if move is None else bool(move)
 
-        # 进入串行化临界区，避免并发请求对同一 SHA256 同时 INSERT。
-        async with self._save_lock:
+        async with self._write_lock:
             duplicated = await self._get_by_sha256(source_hash)
             if duplicated:
                 if should_move:
@@ -439,27 +468,49 @@ class MediaManager:
             temp_target = target.with_suffix(f"{target.suffix}.part")
             if temp_target.exists():
                 temp_target.unlink(missing_ok=True)
-            if should_move:
-                shutil.move(str(source), str(temp_target))
-            else:
-                shutil.copy2(source, temp_target)
-            temp_target.replace(target)
+            committed = False
+            try:
+                if should_move:
+                    shutil.move(str(source), str(temp_target))
+                else:
+                    shutil.copy2(source, temp_target)
+                temp_target.replace(target)
 
-            rel_path = relative_posix(target, self.media_root)
-            saved = await self._insert_record(
-                category=normalized_category,
-                filename=target.name,
-                rel_path=rel_path,
-                kind=kind,
-                mime=mime,
-                size=target.stat().st_size,
-                sha256=source_hash,
-                source_url=source_url,
-                sender_id=sender_id,
-                description=description.strip(),
-                tags=self._parse_tags(tags),
-            )
-            return saved
+                rel_path = relative_posix(target, self.media_root)
+                conn = await self._ensure_conn()
+                await self._begin_write_transaction(conn)
+                try:
+                    saved = await self._insert_record(
+                        category=normalized_category,
+                        filename=target.name,
+                        rel_path=rel_path,
+                        kind=kind,
+                        mime=mime,
+                        size=target.stat().st_size,
+                        sha256=source_hash,
+                        source_url=source_url,
+                        sender_id=sender_id,
+                        description=description.strip(),
+                        tags=self._parse_tags(tags),
+                        conn=conn,
+                        commit=False,
+                    )
+                    await conn.commit()
+                    committed = True
+                    return saved
+                except Exception:
+                    await conn.rollback()
+                    raise
+            except Exception:
+                self._cleanup_temp_path(temp_target)
+                if not committed:
+                    try:
+                        self._rollback_saved_target(
+                            target, source, should_move=should_move
+                        )
+                    except Exception as rollback_exc:
+                        logger.warning("回滚媒体文件失败: %s", rollback_exc)
+                raise
 
     async def save_from_url(
         self,
@@ -553,62 +604,85 @@ class MediaManager:
             fields.append("tags = ?")
             params.append(json.dumps(self._parse_tags(tags), ensure_ascii=False))
         if fields:
-            fields.append("updated_at = ?")
-            params.append(now_ts())
-            params.append(int(media_id))
-            await conn.execute(
-                f"UPDATE media SET {', '.join(fields)} WHERE id = ?",
-                tuple(params),
-            )
-            await conn.commit()
+            async with self._write_lock:
+                fields.append("updated_at = ?")
+                params.append(now_ts())
+                params.append(int(media_id))
+                await conn.execute(
+                    f"UPDATE media SET {', '.join(fields)} WHERE id = ?",
+                    tuple(params),
+                )
+                await conn.commit()
         refreshed = await self.get_by_id(media_id)
         if refreshed is None:
             raise RuntimeError("更新后的记录意外丢失。")
         return refreshed
 
     async def delete_media(self, media_id: int) -> bool:
-        record = await self.get_by_id(media_id)
-        if not record:
-            return False
-        file_path = Path(record.abs_path)
-        if file_path.exists():
-            try:
-                file_path.unlink()
-            except Exception as exc:
-                logger.warning("删除媒体文件失败: %s", exc)
-        conn = await self._ensure_conn()
-        await conn.execute("DELETE FROM media WHERE id = ?", (int(media_id),))
-        await conn.commit()
-        return True
+        async with self._write_lock:
+            record = await self.get_by_id(media_id)
+            if not record:
+                return False
+            file_path = Path(record.abs_path)
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception as exc:
+                    logger.warning("删除媒体文件失败: %s", exc)
+            conn = await self._ensure_conn()
+            await conn.execute("DELETE FROM media WHERE id = ?", (int(media_id),))
+            await conn.commit()
+            return True
 
     async def move_media(self, media_id: int, new_category: str) -> MediaRecord:
-        record = await self.get_by_id(media_id)
-        if not record:
-            raise ValueError("媒体不存在。")
-        source = Path(record.abs_path)
-        if not source.exists():
-            raise FileNotFoundError("媒体文件已不存在。")
+        async with self._write_lock:
+            record = await self.get_by_id(media_id)
+            if not record:
+                raise ValueError("媒体不存在。")
+            source = Path(record.abs_path)
+            if not source.exists():
+                raise FileNotFoundError("媒体文件已不存在。")
 
-        normalized_category = self.category_manager.ensure_category(new_category)
-        target_dir = ensure_dir(self.media_root / normalized_category)
-        target_path = unique_path(target_dir / source.name)
-        shutil.move(str(source), str(target_path))
+            normalized_category = self.category_manager.ensure_category(new_category)
+            target_dir = ensure_dir(self.media_root / normalized_category)
+            target_path = unique_path(target_dir / source.name)
+            conn = await self._ensure_conn()
 
-        new_rel_path = relative_posix(target_path, self.media_root)
-        conn = await self._ensure_conn()
-        await conn.execute(
-            """
-            UPDATE media
-            SET category = ?, filename = ?, rel_path = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (normalized_category, target_path.name, new_rel_path, now_ts(), int(media_id)),
-        )
-        await conn.commit()
-        refreshed = await self.get_by_id(media_id)
-        if refreshed is None:
-            raise RuntimeError("移动后的记录意外丢失。")
-        return refreshed
+            try:
+                shutil.move(str(source), str(target_path))
+                new_rel_path = relative_posix(target_path, self.media_root)
+                await self._begin_write_transaction(conn)
+                try:
+                    await conn.execute(
+                        """
+                        UPDATE media
+                        SET category = ?, filename = ?, rel_path = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            normalized_category,
+                            target_path.name,
+                            new_rel_path,
+                            now_ts(),
+                            int(media_id),
+                        ),
+                    )
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+            except Exception:
+                try:
+                    if target_path.exists() and not source.exists():
+                        shutil.move(str(target_path), str(source))
+                except Exception as rollback_exc:
+                    logger.warning("回滚媒体移动失败: %s", rollback_exc)
+                raise
+
+            refreshed = await self.get_by_id(media_id)
+            if refreshed is None:
+                raise RuntimeError("移动后的记录意外丢失。")
+            return refreshed
 
     async def create_category(self, category: str, description: str = "") -> str:
         normalized = self.category_manager.ensure_category(category, description=description)
@@ -622,152 +696,193 @@ class MediaManager:
         if old_normalized == new_normalized:
             return True, new_normalized
 
-        old_dir = self.media_root / old_normalized
-        new_dir = self.media_root / new_normalized
-        if not old_dir.exists():
-            return False, "原分类不存在。"
-        if new_dir.exists():
-            return False, "目标分类已存在。"
+        async with self._write_lock:
+            old_dir = self.media_root / old_normalized
+            new_dir = self.media_root / new_normalized
+            if not old_dir.exists():
+                return False, "原分类不存在。"
+            if new_dir.exists():
+                return False, "目标分类已存在。"
 
-        old_dir.rename(new_dir)
-        renamed, _target = self.category_manager.rename_category(old_normalized, new_normalized)
-        if not renamed:
-            return False, "分类元数据重命名失败。"
+            metadata_renamed = False
+            try:
+                old_dir.rename(new_dir)
+                renamed, _target = self.category_manager.rename_category(
+                    old_normalized, new_normalized
+                )
+                if not renamed:
+                    raise ValueError("分类元数据重命名失败。")
+                metadata_renamed = True
 
-        conn = await self._ensure_conn()
-        cursor = await conn.execute(
-            "SELECT id, filename FROM media WHERE category = ?",
-            (old_normalized,),
-        )
-        rows = await cursor.fetchall()
-        for row in rows:
-            media_id = int(row["id"])
-            filename = str(row["filename"])
-            rel_path = f"{new_normalized}/{filename}"
-            await conn.execute(
-                """
-                UPDATE media
-                SET category = ?, rel_path = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (new_normalized, rel_path, now_ts(), media_id),
-            )
-        await conn.commit()
-        return True, new_normalized
+                conn = await self._ensure_conn()
+                await self._begin_write_transaction(conn)
+                try:
+                    cursor = await conn.execute(
+                        "SELECT id, filename FROM media WHERE category = ?",
+                        (old_normalized,),
+                    )
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        media_id = int(row["id"])
+                        filename = str(row["filename"])
+                        rel_path = f"{new_normalized}/{filename}"
+                        await conn.execute(
+                            """
+                            UPDATE media
+                            SET category = ?, rel_path = ?, updated_at = ?
+                            WHERE id = ?
+                            """,
+                            (new_normalized, rel_path, now_ts(), media_id),
+                        )
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+                return True, new_normalized
+            except ValueError as exc:
+                try:
+                    if new_dir.exists() and not old_dir.exists():
+                        new_dir.rename(old_dir)
+                except Exception as rollback_exc:
+                    logger.warning("回滚分类目录失败: %s", rollback_exc)
+                return False, str(exc)
+            except Exception:
+                if metadata_renamed:
+                    reverted, _target = self.category_manager.rename_category(
+                        new_normalized, old_normalized
+                    )
+                    if not reverted:
+                        logger.warning(
+                            "回滚分类元数据失败: %s -> %s",
+                            new_normalized,
+                            old_normalized,
+                        )
+                try:
+                    if new_dir.exists() and not old_dir.exists():
+                        new_dir.rename(old_dir)
+                except Exception as rollback_exc:
+                    logger.warning("回滚分类目录失败: %s", rollback_exc)
+                raise
 
     async def delete_category(self, category: str, *, remove_files: bool = True) -> dict[str, Any]:
         normalized = slugify_category(category)
-        conn = await self._ensure_conn()
-        cursor = await conn.execute(
-            "SELECT id, rel_path FROM media WHERE category = ?",
-            (normalized,),
-        )
-        rows = await cursor.fetchall()
-        deleted_files = 0
-        if remove_files:
-            for row in rows:
-                rel = str(row["rel_path"])
-                file_path = (self.media_root / rel).resolve()
-                if file_path.exists() and file_path.is_file():
-                    try:
-                        file_path.unlink()
-                        deleted_files += 1
-                    except Exception:
-                        pass
-        await conn.execute("DELETE FROM media WHERE category = ?", (normalized,))
-        await conn.commit()
+        async with self._write_lock:
+            conn = await self._ensure_conn()
+            cursor = await conn.execute(
+                "SELECT id, rel_path FROM media WHERE category = ?",
+                (normalized,),
+            )
+            rows = await cursor.fetchall()
+            deleted_files = 0
+            if remove_files:
+                for row in rows:
+                    rel = str(row["rel_path"])
+                    file_path = (self.media_root / rel).resolve()
+                    if file_path.exists() and file_path.is_file():
+                        try:
+                            file_path.unlink()
+                            deleted_files += 1
+                        except Exception:
+                            pass
+            await conn.execute("DELETE FROM media WHERE category = ?", (normalized,))
+            await conn.commit()
 
-        category_dir = self.media_root / normalized
-        if category_dir.exists():
-            try:
-                if remove_files:
-                    shutil.rmtree(category_dir)
-                else:
-                    # remove_files=False 时只允许清理空目录，避免误伤用户仍想保留的文件
-                    try:
-                        category_dir.rmdir()
-                    except OSError:
-                        logger.info(
-                            "分类目录 %s 非空且 remove_files=False，保留物理文件。",
-                            category_dir,
-                        )
-            except Exception as exc:
-                logger.warning("删除分类目录失败: %s", exc)
-        self.category_manager.delete_category(normalized)
-        return {"category": normalized, "deleted_files": deleted_files, "deleted_rows": len(rows)}
+            category_dir = self.media_root / normalized
+            if category_dir.exists():
+                try:
+                    if remove_files:
+                        shutil.rmtree(category_dir)
+                    else:
+                        # remove_files=False 时只允许清理空目录，避免误伤用户仍想保留的文件
+                        try:
+                            category_dir.rmdir()
+                        except OSError:
+                            logger.info(
+                                "分类目录 %s 非空且 remove_files=False，保留物理文件。",
+                                category_dir,
+                            )
+                except Exception as exc:
+                    logger.warning("删除分类目录失败: %s", exc)
+            self.category_manager.delete_category(normalized)
+            return {
+                "category": normalized,
+                "deleted_files": deleted_files,
+                "deleted_rows": len(rows),
+            }
 
     async def ensure_scanned(self) -> dict[str, int]:
         """扫描媒体目录并修复索引，同步清理孤儿分类元数据。"""
-        self.category_manager.sync_with_filesystem()
-        conn = await self._ensure_conn()
-        cursor = await conn.execute("SELECT id, rel_path FROM media")
-        rows = await cursor.fetchall()
-        db_rel_to_id = {str(row["rel_path"]): int(row["id"]) for row in rows}
+        async with self._write_lock:
+            self.category_manager.sync_with_filesystem()
+            conn = await self._ensure_conn()
+            cursor = await conn.execute("SELECT id, rel_path FROM media")
+            rows = await cursor.fetchall()
+            db_rel_to_id = {str(row["rel_path"]): int(row["id"]) for row in rows}
 
-        fs_rel_paths: set[str] = set()
-        indexed = 0
-        skipped = 0
-        try:
-            category_dirs = list(self.media_root.iterdir())
-        except OSError as exc:
-            logger.warning("扫描根目录失败: %s", exc)
-            category_dirs = []
-        for category_dir in category_dirs:
+            fs_rel_paths: set[str] = set()
+            indexed = 0
+            skipped = 0
             try:
-                if not category_dir.is_dir():
-                    continue
-            except OSError:
-                continue
-            category = slugify_category(category_dir.name)
-            self.category_manager.ensure_category(category)
-            try:
-                file_iter = list(category_dir.iterdir())
+                category_dirs = list(self.media_root.iterdir())
             except OSError as exc:
-                logger.warning("扫描分类目录失败 %s: %s", category_dir, exc)
-                continue
-            for file_path in file_iter:
+                logger.warning("扫描根目录失败: %s", exc)
+                category_dirs = []
+            for category_dir in category_dirs:
                 try:
-                    if not file_path.is_file():
+                    if not category_dir.is_dir():
                         continue
-                    rel = relative_posix(file_path, self.media_root)
-                    fs_rel_paths.add(rel)
-                    if rel in db_rel_to_id:
-                        continue
-                    mime, kind = detect_mime_and_kind(file_path)
-                    if not is_kind_allowed(kind, self.allowed_kinds):
-                        skipped += 1
-                        continue
-                    sha256 = file_sha256(file_path)
-                    await self._insert_record(
-                        category=category,
-                        filename=file_path.name,
-                        rel_path=rel,
-                        kind=kind,
-                        mime=mime,
-                        size=file_path.stat().st_size,
-                        sha256=sha256,
-                        description="",
-                        tags=[],
-                    )
-                    indexed += 1
+                except OSError:
+                    continue
+                category = slugify_category(category_dir.name)
+                self.category_manager.ensure_category(category)
+                try:
+                    file_iter = list(category_dir.iterdir())
                 except OSError as exc:
-                    logger.warning("扫描文件失败 %s: %s", file_path, exc)
-                    skipped += 1
+                    logger.warning("扫描分类目录失败 %s: %s", category_dir, exc)
+                    continue
+                for file_path in file_iter:
+                    try:
+                        if not file_path.is_file():
+                            continue
+                        rel = relative_posix(file_path, self.media_root)
+                        fs_rel_paths.add(rel)
+                        if rel in db_rel_to_id:
+                            continue
+                        mime, kind = detect_mime_and_kind(file_path)
+                        if not is_kind_allowed(kind, self.allowed_kinds):
+                            skipped += 1
+                            continue
+                        sha256 = file_sha256(file_path)
+                        await self._insert_record(
+                            category=category,
+                            filename=file_path.name,
+                            rel_path=rel,
+                            kind=kind,
+                            mime=mime,
+                            size=file_path.stat().st_size,
+                            sha256=sha256,
+                            description="",
+                            tags=[],
+                        )
+                        indexed += 1
+                    except OSError as exc:
+                        logger.warning("扫描文件失败 %s: %s", file_path, exc)
+                        skipped += 1
 
-        stale = [rel for rel in db_rel_to_id.keys() if rel not in fs_rel_paths]
-        removed = 0
-        for rel in stale:
-            await conn.execute("DELETE FROM media WHERE rel_path = ?", (rel,))
-            removed += 1
-        if removed:
-            await conn.commit()
-        pruned_categories = self.category_manager.prune_missing_folders()
-        return {
-            "indexed": indexed,
-            "removed": removed,
-            "skipped": skipped,
-            "pruned_categories": len(pruned_categories),
-        }
+            stale = [rel for rel in db_rel_to_id.keys() if rel not in fs_rel_paths]
+            removed = 0
+            for rel in stale:
+                await conn.execute("DELETE FROM media WHERE rel_path = ?", (rel,))
+                removed += 1
+            if removed:
+                await conn.commit()
+            pruned_categories = self.category_manager.prune_missing_folders()
+            return {
+                "indexed": indexed,
+                "removed": removed,
+                "skipped": skipped,
+                "pruned_categories": len(pruned_categories),
+            }
 
     async def prune_empty_categories(
         self, *, protected: set[str] | None = None

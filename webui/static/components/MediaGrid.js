@@ -35,12 +35,46 @@ export const MediaGrid = {
   data() {
     return {
       localQuery: this.query,
+      pinned: false,
+      teleportReady: false,
     };
   },
   watch: {
     query(value) {
       this.localQuery = value;
     },
+    selectedIds: {
+      handler(value) {
+        const hasSelection = Array.isArray(value) && value.length > 0;
+        if (hasSelection) {
+          this.$nextTick(() => {
+            this.updatePinned();
+          });
+        } else {
+          this.pinned = false;
+        }
+      },
+      immediate: true,
+    },
+  },
+  mounted() {
+    this.teleportReady = !!document.getElementById("topbar-pinned-slot");
+    if (!this.teleportReady) {
+      this.$nextTick(() => {
+        this.teleportReady = !!document.getElementById("topbar-pinned-slot");
+      });
+    }
+    this._onScrollOrResize = () => this.updatePinned();
+    window.addEventListener("scroll", this._onScrollOrResize, { passive: true });
+    window.addEventListener("resize", this._onScrollOrResize);
+    this.$nextTick(() => this.updatePinned());
+  },
+  beforeUnmount() {
+    if (this._onScrollOrResize) {
+      window.removeEventListener("scroll", this._onScrollOrResize);
+      window.removeEventListener("resize", this._onScrollOrResize);
+      this._onScrollOrResize = null;
+    }
   },
   computed: {
     statCards() {
@@ -103,6 +137,35 @@ export const MediaGrid = {
     },
   },
   methods: {
+    updatePinned() {
+      if (!this.selectedIds || !this.selectedIds.length) {
+        if (this.pinned) this.pinned = false;
+        return;
+      }
+      const el = this.$refs.inlineSelectionBar;
+      if (!el) {
+        if (this.pinned) this.pinned = false;
+        return;
+      }
+      const topbar = document.querySelector(".topbar");
+      const refBottom = topbar
+        ? Math.ceil(topbar.getBoundingClientRect().bottom)
+        : 72;
+      const rect = el.getBoundingClientRect();
+      const next = rect.bottom < refBottom + 4;
+      if (next !== this.pinned) {
+        this.pinned = next;
+      }
+    },
+    onClearSelection() {
+      this.$emit("clear-selection");
+    },
+    onBatchChangeCategory() {
+      this.$emit("batch-change-category");
+    },
+    onBatchDelete() {
+      this.$emit("batch-delete");
+    },
     submitSearch() {
       this.$emit("search", this.localQuery);
       // 触屏设备上提交后主动失焦以收起虚拟键盘
@@ -223,24 +286,71 @@ export const MediaGrid = {
           </button>
         </div>
 
-        <div v-if="selectedIds.length" class="selection-bar">
+        <div
+          v-if="selectedIds.length"
+          ref="inlineSelectionBar"
+          class="selection-bar"
+          :class="{ 'is-hidden-when-pinned': pinned }"
+          aria-hidden="false"
+        >
           <span>
             <Icon name="check-check" :size="14" style="vertical-align: -2px" />
             已选择 <strong>{{ selectedIds.length }}</strong> 个媒体
           </span>
           <div class="actions">
-            <button class="sm" @click="$emit('clear-selection')">
+            <button class="sm" @click="onClearSelection">
               <Icon name="x" :size="14" /> 取消选择
             </button>
-            <button class="sm" @click="$emit('batch-change-category')" title="批量移动到分类">
+            <button class="sm" @click="onBatchChangeCategory" title="批量移动到分类">
               <Icon name="folder-input" :size="14" /> 批量分类
             </button>
-            <button class="danger sm" @click="$emit('batch-delete')">
+            <button class="danger sm" @click="onBatchDelete">
               <Icon name="trash-2" :size="14" /> 批量删除
             </button>
           </div>
         </div>
       </div>
+
+      <teleport to="#topbar-pinned-slot" v-if="teleportReady">
+        <transition name="pinned-slide">
+          <div
+            v-if="pinned && selectedIds.length"
+            class="selection-bar--pinned"
+            role="toolbar"
+            aria-label="批量操作"
+          >
+            <div class="actions">
+              <button
+                class="sm pinned-optional"
+                type="button"
+                @click="onClearSelection"
+                title="取消选择"
+              >
+                <Icon name="x" :size="14" />
+                <span class="hide-mobile">取消</span>
+              </button>
+              <button
+                class="sm pinned-secondary"
+                type="button"
+                @click="onBatchChangeCategory"
+                title="批量移动到分类"
+              >
+                <Icon name="folder-input" :size="14" />
+                <span class="hide-mobile">分类</span>
+              </button>
+              <button
+                class="danger sm"
+                type="button"
+                @click="onBatchDelete"
+                title="批量删除"
+              >
+                <Icon name="trash-2" :size="14" />
+                <span class="hide-mobile">删除</span>
+              </button>
+            </div>
+          </div>
+        </transition>
+      </teleport>
 
       <div v-if="loading" class="skeleton-grid">
         <div v-for="n in 8" :key="n" class="skeleton-card">

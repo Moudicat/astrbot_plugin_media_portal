@@ -10,6 +10,7 @@ import { DataFileModal } from "./components/DataFileModal.js";
 import { CategoryCreateDialog } from "./components/CategoryCreateDialog.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
 import { BatchCategoryDialog } from "./components/BatchCategoryDialog.js";
+import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import { Toast } from "./components/Toast.js";
 import { AudioDock } from "./components/AudioDock.js";
 import { UploadProgress } from "./components/UploadProgress.js";
@@ -81,6 +82,7 @@ createApp({
     CategoryCreateDialog,
     SettingsDialog,
     BatchCategoryDialog,
+    ConfirmDialog,
     Toast,
     AudioDock,
     UploadProgress,
@@ -133,6 +135,16 @@ createApp({
         totalPages: 0,
       },
       toasts: [],
+      confirmState: {
+        visible: false,
+        title: "请确认",
+        message: "",
+        detail: "",
+        confirmText: "确认",
+        cancelText: "取消",
+        tone: "primary",
+        icon: "",
+      },
       config: {
         access_urls: [],
         public_base_url: "",
@@ -149,6 +161,12 @@ createApp({
     canDataBrowse() {
       return !!this.config.expose_astrbot_data;
     },
+  },
+  provide() {
+    return {
+      confirm: (options) => this.confirm(options),
+      notify: (text, type, title) => this.notify(text, type, title),
+    };
   },
   mounted() {
     this.applyTheme(this.theme);
@@ -171,6 +189,40 @@ createApp({
     toggleTheme() {
       this.theme = this.theme === "dark" ? "light" : "dark";
       this.applyTheme(this.theme);
+    },
+    confirm(options = {}) {
+      return new Promise((resolve) => {
+        if (this._confirmResolver) {
+          try {
+            this._confirmResolver(false);
+          } catch (_e) {
+            // ignore
+          }
+        }
+        this._confirmResolver = resolve;
+        this.confirmState = {
+          visible: true,
+          title: options.title || "请确认",
+          message: options.message || "",
+          detail: options.detail || "",
+          confirmText: options.confirmText || "确认",
+          cancelText: options.cancelText || "取消",
+          tone: options.tone || "primary",
+          icon: options.icon || "",
+        };
+      });
+    },
+    resolveConfirm(result) {
+      this.confirmState.visible = false;
+      const resolver = this._confirmResolver;
+      this._confirmResolver = null;
+      if (resolver) {
+        try {
+          resolver(!!result);
+        } catch (_e) {
+          // ignore
+        }
+      }
     },
     notify(text, type = "info", title = "") {
       const id = `${Date.now()}_${Math.random()}`;
@@ -467,7 +519,15 @@ createApp({
       }
     },
     async deleteMedia(mediaId) {
-      if (!window.confirm("确认删除该媒体吗？")) return;
+      const ok = await this.confirm({
+        title: "删除媒体",
+        message: "确认删除该媒体吗？",
+        detail: "删除后文件将从磁盘移除，无法恢复。",
+        confirmText: "删除",
+        tone: "danger",
+        icon: "trash-2",
+      });
+      if (!ok) return;
       try {
         await this.request(`/api/media/${mediaId}`, { method: "DELETE" });
         this.notify("媒体已删除", "success");
@@ -484,10 +544,15 @@ createApp({
     },
     async batchDelete() {
       if (!this.selectedIds.length) return;
-      if (
-        !window.confirm(`确认删除选中的 ${this.selectedIds.length} 个媒体吗？`)
-      )
-        return;
+      const ok = await this.confirm({
+        title: "批量删除",
+        message: `确认删除选中的 ${this.selectedIds.length} 个媒体吗？`,
+        detail: "所有选中文件会被逐个从数据库与磁盘移除，无法撤销。",
+        confirmText: `删除 ${this.selectedIds.length} 项`,
+        tone: "danger",
+        icon: "trash-2",
+      });
+      if (!ok) return;
       let success = 0;
       for (const id of this.selectedIds) {
         try {
@@ -645,12 +710,14 @@ createApp({
       ]);
     },
     async pruneCategories() {
-      if (
-        !window.confirm(
-          "将清理所有无媒体、空目录的分类（保留 default），是否继续？",
-        )
-      )
-        return;
+      const ok = await this.confirm({
+        title: "清理空分类",
+        message: "将清理所有无媒体、空目录的分类（保留 default），是否继续？",
+        confirmText: "立即清理",
+        tone: "warning",
+        icon: "eraser",
+      });
+      if (!ok) return;
       try {
         const result = await this.request("/api/categories/prune", {
           method: "POST",
@@ -1127,7 +1194,7 @@ createApp({
         @toggle-theme="toggleTheme"
       />
       <template v-else>
-        <header class="topbar">
+        <header class="topbar" :class="{ 'has-pinned': selectedCount > 0 }">
           <div class="topbar-left">
             <button
               class="icon mobile-only"
@@ -1149,6 +1216,7 @@ createApp({
               <Icon name="check-check" :size="12" />
               {{ selectedCount }}
             </span>
+            <div id="topbar-pinned-slot" class="topbar-pinned-slot"></div>
           </div>
           <div class="topbar-actions">
             <button class="icon" @click="toggleTheme" :title="theme === 'dark' ? '切换浅色' : '切换深色'">
@@ -1314,6 +1382,19 @@ createApp({
           @cancel="cancelUpload"
           @dismiss="dismissUpload"
           @clear-finished="clearFinishedUploads"
+        />
+
+        <ConfirmDialog
+          :visible="confirmState.visible"
+          :title="confirmState.title"
+          :message="confirmState.message"
+          :detail="confirmState.detail"
+          :confirm-text="confirmState.confirmText"
+          :cancel-text="confirmState.cancelText"
+          :tone="confirmState.tone"
+          :icon="confirmState.icon"
+          @confirm="resolveConfirm(true)"
+          @cancel="resolveConfirm(false)"
         />
 
         <Toast :messages="toasts" />

@@ -521,3 +521,116 @@ def test_ensure_scanned_counts_skipped_for_disallowed_kind(tmp_path: Path) -> No
             await manager.close()
 
     asyncio.run(scenario())
+
+
+def test_save_from_local_path_rolls_back_file_on_index_failure(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            source = tmp_path / "rollback.jpg"
+            source.write_bytes(b"rollback")
+
+            async def fake_insert_record(*args, **kwargs):
+                _ = (args, kwargs)
+                raise RuntimeError("db-fail")
+
+            manager._insert_record = fake_insert_record  # type: ignore[method-assign]
+
+            with pytest.raises(RuntimeError, match="db-fail"):
+                await manager.save_from_local_path(
+                    str(source),
+                    category="rollback",
+                    move=True,
+                )
+
+            assert source.exists() is True
+            rollback_dir = manager.media_root / "rollback"
+            assert list(rollback_dir.glob("*")) == []
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_move_media_rolls_back_file_when_index_update_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            source = tmp_path / "move_fail.jpg"
+            source.write_bytes(b"move-fail")
+            record = await manager.save_from_local_path(
+                str(source), category="src", move=False
+            )
+            original_path = Path(record.abs_path)
+            conn = await manager._ensure_conn()
+            original_execute = conn.execute
+
+            async def fail_execute(sql: str, parameters=()):
+                normalized_sql = " ".join(sql.split())
+                if normalized_sql.startswith(
+                    "UPDATE media SET category = ?, filename = ?, rel_path = ?, updated_at = ?"
+                ):
+                    raise RuntimeError("move-db-fail")
+                return await original_execute(sql, parameters)
+
+            monkeypatch.setattr(conn, "execute", fail_execute)
+
+            with pytest.raises(RuntimeError, match="move-db-fail"):
+                await manager.move_media(record.id, "dst")
+
+            refreshed = await manager.get_by_id(record.id)
+            assert refreshed is not None
+            assert refreshed.category == "src"
+            assert Path(refreshed.abs_path) == original_path
+            assert original_path.exists() is True
+            assert (manager.media_root / "dst" / original_path.name).exists() is False
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_rename_category_rolls_back_when_index_update_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            source = tmp_path / "rename_fail.jpg"
+            source.write_bytes(b"rename-fail")
+            record = await manager.save_from_local_path(
+                str(source), category="oldcat", move=False
+            )
+            conn = await manager._ensure_conn()
+            original_execute = conn.execute
+
+            async def fail_execute(sql: str, parameters=()):
+                normalized_sql = " ".join(sql.split())
+                if normalized_sql.startswith(
+                    "UPDATE media SET category = ?, rel_path = ?, updated_at = ?"
+                ):
+                    raise RuntimeError("rename-db-fail")
+                return await original_execute(sql, parameters)
+
+            monkeypatch.setattr(conn, "execute", fail_execute)
+
+            with pytest.raises(RuntimeError, match="rename-db-fail"):
+                await manager.rename_category("oldcat", "newcat")
+
+            refreshed = await manager.get_by_id(record.id)
+            assert refreshed is not None
+            assert refreshed.category == "oldcat"
+            assert refreshed.rel_path.startswith("oldcat/")
+            assert Path(refreshed.abs_path).exists() is True
+            assert (manager.media_root / "oldcat").exists() is True
+            assert (manager.media_root / "newcat").exists() is False
+            assert "newcat" not in manager.category_manager.list_categories()
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
