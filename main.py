@@ -61,6 +61,7 @@ class MediaPortalPlugin(Star):
         self._bootstrap_task: asyncio.Task | None = None
         self._init_lock = asyncio.Lock()
         self._initialized = False
+        self._schedule_bootstrap()
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
         task = asyncio.create_task(coro)
