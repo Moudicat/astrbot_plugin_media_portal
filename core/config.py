@@ -147,7 +147,10 @@ class StorageSettings:
     location_mode: str = "plugin_data"
 
 
-_DEFAULT_LOCAL_PATH_WHITELIST: tuple[str, ...] = ("/workspaces", "/temp")
+_DEFAULT_LOCAL_PATH_WHITELIST: tuple[str, ...] = (
+    "/AstrBot/data/workspaces",
+    "/AstrBot/data/temp",
+)
 
 
 @dataclass(slots=True)

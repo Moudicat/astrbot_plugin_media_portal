@@ -162,7 +162,9 @@ class MediaDownloader:
         path = Path(src).expanduser().resolve()
         if not self._is_local_path_allowed(path):
             raise ValueError(
-                "本地路径不在白名单范围内；请联系管理员在 downloader.local_path_whitelist 中追加该目录。"
+                f"本地路径 “{path}” 不在白名单范围内，无法保存。"
+                "请让用户前往 AstrBot 插件管理面板 → astrbot_plugin_media_portal → "
+                "下载配置 → “本地路径白名单 local_path_whitelist” 中追加该目录（或其上级目录），保存后重试。"
             )
         return MediaSource(source_type="local", value=str(path), filename_hint=path.name)
 

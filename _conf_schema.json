@@ -121,10 +121,10 @@
         "description": "本地路径白名单（目录前缀）",
         "type": "list",
         "default": [
-          "/workspaces",
-          "/temp"
+          "/AstrBot/data/workspaces",
+          "/AstrBot/data/temp"
         ],
-        "hint": "仅当 allow_local_path_source=true 时生效。save_media 的 source 参数必须位于列表中任一目录（或其子目录）下，否则拒绝。列表置空等同于禁止本地路径。路径支持 ~ 展开，Windows 也可填 D:/data 这类绝对路径。"
+        "hint": "仅当 allow_local_path_source=true 时生效。save_media 的 source 参数必须位于列表中任一目录（或其子目录）下，否则拒绝。列表置空等同于禁止本地路径。"
       }
     }
   }
