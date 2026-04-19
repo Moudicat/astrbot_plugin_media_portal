@@ -906,6 +906,7 @@ class WebUIServer:
                 description=payload.get("description"),
                 tags=payload.get("tags"),
                 category=payload.get("category"),
+                filename=payload.get("filename"),
             )
             data = updated.to_dict()
             data["public_url"] = self.build_media_url(updated)

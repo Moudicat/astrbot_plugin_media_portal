@@ -5,3 +5,4 @@ aiohttp>=3.9
 aiosqlite>=0.19
 python-multipart>=0.0.7
 pillow>=10
+mutagen>=1.47

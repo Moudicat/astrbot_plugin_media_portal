@@ -459,6 +459,50 @@ def test_list_recent_in_category_with_kind_filter(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_update_media_filename_renames_file_and_updates_index(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            source = tmp_path / "origin.jpg"
+            source.write_bytes(b"rename-me")
+            record = await manager.save_from_local_path(
+                str(source), category="rename", move=False
+            )
+            old_path = Path(record.abs_path)
+            assert old_path.exists()
+
+            updated = await manager.update_media(record.id, filename="brand_new")
+            new_path = Path(updated.abs_path)
+
+            assert updated.filename == "brand_new.jpg"
+            assert updated.rel_path == "rename/brand_new.jpg"
+            assert new_path.exists()
+            assert not old_path.exists()
+
+            # 第二次改名到已存在的同名文件时应自动生成 *_1 后缀，避免冲突
+            other = tmp_path / "clash.jpg"
+            other.write_bytes(b"other")
+            other_record = await manager.save_from_local_path(
+                str(other), category="rename", move=False
+            )
+            re_updated = await manager.update_media(
+                other_record.id, filename="brand_new.jpg"
+            )
+            assert re_updated.filename != "brand_new.jpg"
+            assert re_updated.filename.endswith(".jpg")
+
+            # 空白 filename 视为"没传"，不改名也不抛错
+            same = await manager.update_media(record.id, filename="   ")
+            assert same.filename == updated.filename
+            same_empty = await manager.update_media(record.id, filename="")
+            assert same_empty.filename == updated.filename
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_update_media_and_move_media_raise_when_missing_or_file_lost(tmp_path: Path) -> None:
     async def scenario() -> None:
         manager = _build_manager(tmp_path)

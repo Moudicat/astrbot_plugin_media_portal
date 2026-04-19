@@ -1643,6 +1643,18 @@ button.block {
   font-weight: 500;
 }
 
+.field-hint-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--warning, #b45309);
+  background: rgba(245, 158, 11, 0.08);
+  border-radius: 6px;
+  padding: 4px 8px;
+  line-height: 1.3;
+}
+
 .drawer-actions {
   display: flex;
   flex-direction: column;
@@ -2099,6 +2111,9 @@ button.player-nav:disabled,
   grid-template-columns: auto minmax(120px, 1fr) auto;
   gap: 12px;
   align-items: center;
+  /* 只过渡 left / width / max-width / padding，transform 恒为 translateX(-50%) 避免跳动 */
+  transition: left 0.26s ease, width 0.26s ease, max-width 0.26s ease,
+    padding 0.2s ease;
 }
 
 .audio-dock .avatar {
@@ -2130,12 +2145,48 @@ button.player-nav:disabled,
   font-size: 12px;
 }
 
+.audio-dock-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .audio-dock audio {
   width: 100%;
   min-width: 0;
   grid-column: span 3;
   margin-top: 2px;
   height: 36px;
+}
+
+/* 最小化胶囊：只剩头像 + 标题 + 展开按钮。
+   用 width（非 auto）保证与默认宽度之间能平滑过渡 */
+.audio-dock.is-mini {
+  width: min(360px, calc(100% - 24px));
+  padding: 8px 12px;
+  grid-template-columns: auto minmax(80px, 1fr) auto;
+}
+
+.audio-dock.is-mini .avatar {
+  cursor: pointer;
+}
+
+.audio-dock.is-mini .audio-dock-meta small {
+  display: none;
+}
+
+/* drawer 打开时自动避让（宽屏让位给右侧 drawer 440px）
+   做法：保持 transform: translateX(-50%) 不变，仅改 left 与 width。
+   left 从 50vw 过渡到 (100vw - 460px) / 2，即音频条在"视口-抽屉"区域内重新居中。 */
+@media (min-width: 641px) {
+  body.drawer-open .audio-dock {
+    left: calc((100vw - 460px) / 2);
+    width: min(520px, calc(100vw - 480px));
+  }
+
+  body.drawer-open .audio-dock.is-mini {
+    width: min(320px, calc(100vw - 480px));
+  }
 }
 
 /* ============================================================
@@ -3339,6 +3390,33 @@ button.player-nav:disabled,
     border-top-right-radius: var(--radius-xl);
     border-left: none;
     border-top: 1px solid var(--border);
+    transition: max-height 0.24s ease;
+  }
+
+  /* 窄屏下 audio-dock 与 drawer 同时出现时：
+     把音频条挪到视口顶部，抽屉维持贴底 sheet，互不遮挡 */
+  body.drawer-open.audio-dock-active .audio-dock {
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    bottom: auto;
+    animation: audio-dock-float-top 0.28s ease;
+  }
+
+  @keyframes audio-dock-float-top {
+    from {
+      opacity: 0.25;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  /* 顶部音频条占用的空间要从 drawer 高度中扣除，避免 drawer 顶部看不全 */
+  body.drawer-open.audio-dock-active .drawer {
+    max-height: calc(100vh - 140px);
+  }
+
+  body.drawer-open.audio-dock-active.audio-dock-mini .drawer {
+    max-height: calc(100vh - 80px);
   }
 
   .drawer header {

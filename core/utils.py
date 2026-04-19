@@ -267,3 +267,106 @@ def format_size(size: int) -> str:
         if value < 1024:
             return f"{value:.1f}{unit}"
     return f"{value:.1f}PB"
+
+
+def format_duration(seconds: float | None) -> str:
+    """把秒数格式化成 ``m:ss`` 或 ``h:mm:ss``；无/非法值返回空串。"""
+    if not seconds or seconds <= 0:
+        return ""
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError):
+        return ""
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_timestamp(ts: float | None) -> str:
+    """把 ``created_at`` / ``updated_at`` 的 UNIX 时间戳格式化为本地时间字符串。"""
+    if not ts:
+        return ""
+    try:
+        from datetime import datetime
+
+        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+def probe_image_dimensions(path: Path) -> tuple[int, int] | None:
+    """读取图像宽高，失败返回 ``None``（不要求 EXIF 旋转归一化）。"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            return int(img.width), int(img.height)
+    except Exception:
+        return None
+
+
+def probe_audio_duration(path: Path) -> float | None:
+    """通过 mutagen 读音频时长（秒），未安装或解析失败返回 ``None``。"""
+    try:
+        from mutagen import File as MutagenFile  # type: ignore
+
+        mf = MutagenFile(str(path))
+    except Exception:
+        return None
+    info = getattr(mf, "info", None) if mf else None
+    length = getattr(info, "length", None) if info else None
+    try:
+        value = float(length) if length is not None else 0.0
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def probe_video_duration_via_ffprobe(path: Path, timeout: float = 5.0) -> float | None:
+    """调用系统 ``ffprobe`` 读取视频时长（秒）。
+
+    - 未安装 ``ffprobe`` / 调用超时 / 解析失败 一律返回 ``None``
+    - 仅用于 mutagen 不支持的容器（mkv / webm / avi / flv 等）的兜底
+    """
+    import json
+    import shutil as _shutil
+    import subprocess
+
+    ffprobe = _shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        data = json.loads(completed.stdout or "{}")
+    except Exception:
+        return None
+    duration_raw = (data.get("format") or {}).get("duration")
+    if duration_raw is None:
+        return None
+    try:
+        value = float(duration_raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None

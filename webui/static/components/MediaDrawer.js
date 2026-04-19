@@ -15,6 +15,8 @@ export const MediaDrawer = {
       description: "",
       category: "",
       tags: "",
+      filename: "",
+      originalFilename: "",
     };
   },
   watch: {
@@ -25,13 +27,29 @@ export const MediaDrawer = {
           this.description = "";
           this.category = "";
           this.tags = "";
+          this.filename = "";
+          this.originalFilename = "";
           return;
         }
         this.description = value.description || "";
         this.category = value.category || "";
         this.tags = Array.isArray(value.tags) ? value.tags.join(", ") : "";
+        this.filename = value.filename || "";
+        this.originalFilename = value.filename || "";
       },
     },
+    visible: {
+      immediate: true,
+      handler(flag) {
+        if (typeof document === "undefined") return;
+        document.body.classList.toggle("drawer-open", !!flag);
+      },
+    },
+  },
+  beforeUnmount() {
+    if (typeof document !== "undefined") {
+      document.body.classList.remove("drawer-open");
+    }
   },
   computed: {
     fileUrl() {
@@ -53,11 +71,29 @@ export const MediaDrawer = {
         (item) => item && item.category === "default"
       );
     },
+    filenameDirty() {
+      const cleaned = (this.filename || "").trim();
+      return !!cleaned && cleaned !== this.originalFilename;
+    },
+    createdAtLabel() {
+      if (!this.media) return "";
+      const raw = this.media.created_at;
+      if (raw === undefined || raw === null || raw === "") return "";
+      const num = Number(raw);
+      if (!Number.isFinite(num) || num <= 0) return String(raw);
+      const ms = num > 1e12 ? num : num * 1000;
+      const d = new Date(ms);
+      if (Number.isNaN(d.getTime())) return String(raw);
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+        d.getDate()
+      )} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    },
   },
   methods: {
     save() {
       if (!this.media) return;
-      this.$emit("update", {
+      const payload = {
         id: this.media.id,
         description: this.description,
         category: this.category,
@@ -65,7 +101,12 @@ export const MediaDrawer = {
           .split(",")
           .map((item) => item.trim())
           .filter(Boolean),
-      });
+      };
+      const cleanedFilename = (this.filename || "").trim();
+      if (cleanedFilename && cleanedFilename !== this.originalFilename) {
+        payload.filename = cleanedFilename;
+      }
+      this.$emit("update", payload);
     },
   },
   template: `
@@ -98,12 +139,20 @@ export const MediaDrawer = {
 
             <dl class="drawer-meta">
               <dt>ID</dt><dd>{{ media.id }}</dd>
-              <dt>文件</dt><dd>{{ media.filename }}</dd>
               <dt>类型</dt><dd><span class="badge primary">{{ media.kind }}</span></dd>
               <dt>大小</dt><dd>{{ sizeLabel }}</dd>
-              <dt v-if="media.created_at">创建</dt>
-              <dd v-if="media.created_at">{{ media.created_at }}</dd>
+              <dt v-if="createdAtLabel">创建</dt>
+              <dd v-if="createdAtLabel">{{ createdAtLabel }}</dd>
             </dl>
+
+            <div class="field">
+              <label>文件名</label>
+              <input v-model="filename" :placeholder="originalFilename || '文件名'" />
+              <small v-if="filenameDirty" class="field-hint-warn">
+                <Icon name="alert-triangle" :size="12" style="vertical-align: -2px" />
+                改名后原直链 / 分享链接会失效（磁盘文件会被重命名）
+              </small>
+            </div>
 
             <div class="field">
               <label>分类</label>

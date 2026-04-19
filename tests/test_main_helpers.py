@@ -183,6 +183,46 @@ def test_compact_record_and_webui_access_message() -> None:
     assert compact == "id=7 分类=cat 文件=demo.png 类型=image"
 
 
+def test_detailed_record_shows_size_duration_and_timestamp() -> None:
+    import time
+
+    plugin = MediaPortalPlugin.__new__(MediaPortalPlugin)
+
+    # 图片：不显示时长，也不显示分辨率（本轮改回纯字段）。
+    ts = time.time() - 600
+    image = SimpleNamespace(
+        id=42,
+        category="meme",
+        filename="hello.png",
+        kind="image",
+        size=1024 * 300,
+        created_at=ts,
+        duration=0,
+    )
+    image_text = plugin._detailed_record(image)
+    assert "id=42" in image_text
+    assert "分类=meme" in image_text
+    assert "类型=image" in image_text
+    assert "文件=hello.png" in image_text
+    assert "大小=300.0KB" in image_text
+    assert "上传=" in image_text
+    assert "时长=" not in image_text
+    assert "分辨率=" not in image_text
+
+    # 音频：record.duration 有值即应展示时长。
+    audio = SimpleNamespace(
+        id=43,
+        category="bgm",
+        filename="track.mp3",
+        kind="audio",
+        size=1024 * 1024,
+        created_at=ts,
+        duration=125.0,
+    )
+    audio_text = plugin._detailed_record(audio)
+    assert "时长=2:05" in audio_text
+
+
 def test_resolve_record_from_input_by_id_and_query() -> None:
     class _Manager:
         async def get_by_id(self, media_id: int):

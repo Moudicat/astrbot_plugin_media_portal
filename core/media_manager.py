@@ -22,6 +22,8 @@ from .utils import (
     format_size,
     is_kind_allowed,
     now_ts,
+    probe_audio_duration,
+    probe_video_duration_via_ffprobe,
     relative_posix,
     sanitize_filename,
     slugify_category,
@@ -46,6 +48,7 @@ class MediaRecord:
     tags: list[str]
     created_at: float
     updated_at: float
+    duration: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -99,10 +102,20 @@ class MediaManager:
                     description TEXT DEFAULT '',
                     tags TEXT DEFAULT '[]',
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    duration REAL NOT NULL DEFAULT 0
                 )
                 """
             )
+            # 老库升级：duration 列不存在时补齐；SQLite 没有 IF NOT EXISTS，
+            # 靠捕获 "duplicate column name" 识别已经迁移过。
+            try:
+                await self._conn.execute(
+                    "ALTER TABLE media ADD COLUMN duration REAL NOT NULL DEFAULT 0"
+                )
+            except Exception as exc:
+                if "duplicate column" not in str(exc).lower():
+                    logger.debug("ALTER TABLE add duration skipped: %s", exc)
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_media_category_created ON media(category, created_at DESC)"
             )
@@ -155,9 +168,25 @@ class MediaManager:
             return [str(item).strip() for item in tags if str(item).strip()]
         return []
 
+    @staticmethod
+    def _row_get(row: aiosqlite.Row, key: str, default: Any = None) -> Any:
+        """aiosqlite.Row 对于不存在的列会抛 IndexError，这里做一次容错。
+
+        主要是为了兼容"索引版本升级前已加载的 Row"这种极少见边界。
+        """
+        try:
+            return row[key]
+        except (IndexError, KeyError):
+            return default
+
     def _row_to_record(self, row: aiosqlite.Row) -> MediaRecord:
         tags = self._parse_tags(row["tags"])
         abs_path = str((self.media_root / row["rel_path"]).resolve())
+        duration_raw = self._row_get(row, "duration", 0)
+        try:
+            duration_value = float(duration_raw) if duration_raw is not None else 0.0
+        except (TypeError, ValueError):
+            duration_value = 0.0
         return MediaRecord(
             id=int(row["id"]),
             category=str(row["category"]),
@@ -174,6 +203,7 @@ class MediaManager:
             tags=tags,
             created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]),
+            duration=duration_value,
         )
 
     async def _insert_record(
@@ -190,6 +220,7 @@ class MediaManager:
         sender_id: str = "",
         description: str = "",
         tags: list[str] | None = None,
+        duration: float = 0.0,
         conn: aiosqlite.Connection | None = None,
         commit: bool = True,
     ) -> MediaRecord:
@@ -197,12 +228,18 @@ class MediaManager:
             conn = await self._ensure_conn()
         created_at = now_ts()
         tags_json = json.dumps(tags or [], ensure_ascii=False)
+        try:
+            duration_value = float(duration or 0.0)
+        except (TypeError, ValueError):
+            duration_value = 0.0
+        if duration_value < 0:
+            duration_value = 0.0
         cursor = await conn.execute(
             """
             INSERT INTO media (
                 category, filename, rel_path, kind, mime, size, sha256,
-                source_url, sender_id, description, tags, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_url, sender_id, description, tags, created_at, updated_at, duration
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 category,
@@ -218,6 +255,7 @@ class MediaManager:
                 tags_json,
                 created_at,
                 created_at,
+                duration_value,
             ),
         )
         if commit:
@@ -239,6 +277,7 @@ class MediaManager:
             tags=tags or [],
             created_at=created_at,
             updated_at=created_at,
+            duration=duration_value,
         )
 
     async def get_by_id(self, media_id: int) -> MediaRecord | None:
@@ -400,6 +439,32 @@ class MediaManager:
         await conn.execute("BEGIN IMMEDIATE")
 
     @staticmethod
+    def _probe_duration_for_kind(path: Path, kind: str) -> float:
+        """读取音频/视频时长。
+
+        - audio / video 先走 mutagen（覆盖 mp3、flac、ogg、m4a、mp4/m4v/mov 等）
+        - video 读不到时再尝试 ``ffprobe`` 兜底（覆盖 mkv/webm/avi/flv 等），
+          ``ffprobe`` 未安装则静默跳过
+        - 任一失败统一返回 ``0.0``，不影响主流程
+        """
+        if kind not in {"audio", "video"}:
+            return 0.0
+        value: float | None = None
+        try:
+            value = probe_audio_duration(path)
+        except Exception:
+            value = None
+        if (value is None or value <= 0) and kind == "video":
+            try:
+                value = probe_video_duration_via_ffprobe(path)
+            except Exception:
+                value = None
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
     def _cleanup_temp_path(path: Path) -> None:
         try:
             path.unlink(missing_ok=True)
@@ -477,6 +542,7 @@ class MediaManager:
                 temp_target.replace(target)
 
                 rel_path = relative_posix(target, self.media_root)
+                duration_value = self._probe_duration_for_kind(target, kind)
                 conn = await self._ensure_conn()
                 await self._begin_write_transaction(conn)
                 try:
@@ -492,6 +558,7 @@ class MediaManager:
                         sender_id=sender_id,
                         description=description.strip(),
                         tags=self._parse_tags(tags),
+                        duration=duration_value,
                         conn=conn,
                         commit=False,
                     )
@@ -586,6 +653,7 @@ class MediaManager:
         description: str | None = None,
         tags: list[str] | None = None,
         category: str | None = None,
+        filename: str | None = None,
     ) -> MediaRecord:
         record = await self.get_by_id(media_id)
         if not record:
@@ -593,6 +661,11 @@ class MediaManager:
 
         if category and slugify_category(category) != record.category:
             record = await self.move_media(media_id, category)
+
+        # 改名：在持有写锁的事务内把磁盘文件重命名，并同步 filename/rel_path。
+        # 放到 category 处理之后，才能在"新分类目录"里重命名。
+        if filename is not None:
+            await self._rename_media_file(media_id, filename)
 
         conn = await self._ensure_conn()
         fields: list[str] = []
@@ -617,6 +690,67 @@ class MediaManager:
         if refreshed is None:
             raise RuntimeError("更新后的记录意外丢失。")
         return refreshed
+
+    async def _rename_media_file(self, media_id: int, new_filename: str) -> None:
+        """在同一分类目录内重命名媒体文件，同步更新 ``filename`` / ``rel_path``。
+
+        约定："不传 filename" 已经在上层通过 ``filename is None`` 过滤，所以这里
+        只会在调用方确实想改名时才被触发。若 ``new_filename`` 为空串或全为空白，
+        视为"没有给出有效新名字"，直接跳过（不做任何修改，也不抛错）；只有
+        清洗后变成空值的非法字符组合（例如 "..."），才会抛错提醒。
+        """
+        raw_text = str(new_filename or "")
+        if not raw_text.strip():
+            return
+        cleaned = sanitize_filename(raw_text, fallback="")
+        if not cleaned:
+            raise ValueError("filename 无效：清洗后为空，请使用常规字符。")
+
+        async with self._write_lock:
+            current = await self.get_by_id(media_id)
+            if current is None:
+                raise ValueError("媒体不存在。")
+
+            # 原文件名可能带后缀，新名没带时沿用旧后缀。
+            origin_suffix = Path(current.filename).suffix
+            if not Path(cleaned).suffix and origin_suffix:
+                cleaned = f"{cleaned}{origin_suffix}"
+
+            if cleaned == current.filename:
+                return
+
+            source = Path(current.abs_path)
+            if not source.exists():
+                raise FileNotFoundError("媒体文件已不存在。")
+
+            target_dir = source.parent
+            target_path = unique_path(target_dir / cleaned)
+
+            conn = await self._ensure_conn()
+            try:
+                shutil.move(str(source), str(target_path))
+                new_rel = relative_posix(target_path, self.media_root)
+                await self._begin_write_transaction(conn)
+                try:
+                    await conn.execute(
+                        """
+                        UPDATE media
+                        SET filename = ?, rel_path = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (target_path.name, new_rel, now_ts(), int(media_id)),
+                    )
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+            except Exception:
+                try:
+                    if target_path.exists() and not source.exists():
+                        shutil.move(str(target_path), str(source))
+                except Exception as rollback_exc:
+                    logger.warning("回滚媒体改名失败: %s", rollback_exc)
+                raise
 
     async def delete_media(self, media_id: int) -> bool:
         async with self._write_lock:
@@ -811,17 +945,36 @@ class MediaManager:
             }
 
     async def ensure_scanned(self) -> dict[str, int]:
-        """扫描媒体目录并修复索引，同步清理孤儿分类元数据。"""
+        """扫描媒体目录并修复索引，同步清理孤儿分类元数据。
+
+        - 新发现的 audio/video 文件入库时顺带探测时长
+        - 对 ``duration <= 0`` 的旧 audio/video 记录做一次性懒补录
+        """
         async with self._write_lock:
             self.category_manager.sync_with_filesystem()
             conn = await self._ensure_conn()
-            cursor = await conn.execute("SELECT id, rel_path FROM media")
+            cursor = await conn.execute(
+                "SELECT id, rel_path, kind, duration FROM media"
+            )
             rows = await cursor.fetchall()
-            db_rel_to_id = {str(row["rel_path"]): int(row["id"]) for row in rows}
+            db_rel_to_id: dict[str, int] = {}
+            rows_need_duration: list[tuple[int, str, str]] = []
+            for row in rows:
+                rel_value = str(row["rel_path"])
+                db_rel_to_id[rel_value] = int(row["id"])
+                kind_value = str(row["kind"] or "").lower()
+                if kind_value in {"audio", "video"}:
+                    try:
+                        dur_value = float(row["duration"] or 0)
+                    except (TypeError, ValueError):
+                        dur_value = 0.0
+                    if dur_value <= 0:
+                        rows_need_duration.append((int(row["id"]), rel_value, kind_value))
 
             fs_rel_paths: set[str] = set()
             indexed = 0
             skipped = 0
+            duration_filled = 0
             try:
                 category_dirs = list(self.media_root.iterdir())
             except OSError as exc:
@@ -853,6 +1006,7 @@ class MediaManager:
                             skipped += 1
                             continue
                         sha256 = file_sha256(file_path)
+                        duration_value = self._probe_duration_for_kind(file_path, kind)
                         await self._insert_record(
                             category=category,
                             filename=file_path.name,
@@ -863,11 +1017,28 @@ class MediaManager:
                             sha256=sha256,
                             description="",
                             tags=[],
+                            duration=duration_value,
                         )
                         indexed += 1
                     except OSError as exc:
                         logger.warning("扫描文件失败 %s: %s", file_path, exc)
                         skipped += 1
+
+            # 懒补录旧记录的时长：文件仍在磁盘时才做；探测失败静默跳过。
+            for media_id, rel, kind_value in rows_need_duration:
+                if rel not in fs_rel_paths:
+                    continue
+                file_path = self.media_root / rel
+                duration_value = self._probe_duration_for_kind(file_path, kind_value)
+                if duration_value <= 0:
+                    continue
+                await conn.execute(
+                    "UPDATE media SET duration = ? WHERE id = ?",
+                    (duration_value, media_id),
+                )
+                duration_filled += 1
+            if duration_filled:
+                await conn.commit()
 
             stale = [rel for rel in db_rel_to_id.keys() if rel not in fs_rel_paths]
             removed = 0
@@ -882,6 +1053,7 @@ class MediaManager:
                 "removed": removed,
                 "skipped": skipped,
                 "pruned_categories": len(pruned_categories),
+                "duration_filled": duration_filled,
             }
 
     async def prune_empty_categories(

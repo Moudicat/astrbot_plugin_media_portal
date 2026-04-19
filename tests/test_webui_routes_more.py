@@ -210,7 +210,15 @@ class _RouteMediaManager:
     async def get_by_id(self, media_id: int):
         return self._records.get(int(media_id))
 
-    async def update_media(self, media_id: int, *, description=None, tags=None, category=None):
+    async def update_media(
+        self,
+        media_id: int,
+        *,
+        description=None,
+        tags=None,
+        category=None,
+        filename=None,
+    ):
         record = self._records.get(int(media_id))
         if not record:
             raise ValueError("媒体不存在")
@@ -225,6 +233,20 @@ class _RouteMediaManager:
                     old_path.rename(new_path)
                 record.category = new_category
                 record.rel_path = f"{new_category}/{record.filename}"
+                record.abs_path = str(new_path.resolve())
+        if filename is not None:
+            cleaned = str(filename).strip()
+            if not cleaned:
+                raise ValueError("filename 不能为空")
+            if "." not in cleaned:
+                cleaned = f"{cleaned}{Path(record.filename).suffix}"
+            if cleaned != record.filename:
+                old_path = Path(record.abs_path)
+                new_path = old_path.parent / cleaned
+                if old_path.exists():
+                    old_path.rename(new_path)
+                record.filename = cleaned
+                record.rel_path = f"{record.category}/{cleaned}"
                 record.abs_path = str(new_path.resolve())
         if description is not None:
             record.description = str(description).strip()

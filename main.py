@@ -19,7 +19,12 @@ except Exception:  # pragma: no cover
     astrbot_config = None
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
-from .core.utils import format_size, parse_bool
+from .core.utils import (
+    format_duration,
+    format_size,
+    format_timestamp,
+    parse_bool,
+)
 from .webui import WebUIServer
 
 
@@ -27,7 +32,7 @@ from .webui import WebUIServer
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.2.0",
+    "0.2.1",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -178,6 +183,52 @@ class MediaPortalPlugin(Star):
             f"id={getattr(record, 'id', '')} 分类={getattr(record, 'category', '')} "
             f"文件={getattr(record, 'filename', '')} 类型={getattr(record, 'kind', '')}"
         )
+
+    @staticmethod
+    def _extract_record_fields(record: Any) -> dict[str, Any]:
+        """把 ``MediaRecord`` / dict 统一拆成同一组字段，便于输出。"""
+        if isinstance(record, dict):
+            return {
+                "id": record.get("id"),
+                "category": record.get("category"),
+                "filename": record.get("filename"),
+                "kind": record.get("kind"),
+                "size": int(record.get("size", 0) or 0),
+                "created_at": float(record.get("created_at", 0) or 0),
+                "duration": float(record.get("duration", 0) or 0),
+            }
+        return {
+            "id": getattr(record, "id", None),
+            "category": getattr(record, "category", ""),
+            "filename": getattr(record, "filename", ""),
+            "kind": getattr(record, "kind", ""),
+            "size": int(getattr(record, "size", 0) or 0),
+            "created_at": float(getattr(record, "created_at", 0) or 0),
+            "duration": float(getattr(record, "duration", 0) or 0),
+        }
+
+    def _detailed_record(self, record: Any) -> str:
+        """展示单条媒体的详细摘要：id / 分类 / 类型 / 文件 / 大小 / 时长 / 上传时间。
+
+        时长来源于 DB 中 ``duration`` 列（保存 / 扫描时一次性探测），
+        不再运行时临时读取文件，避免列表类 API 的性能抖动。
+        """
+        f = self._extract_record_fields(record)
+        head = (
+            f"id={f['id']} 分类={f['category']} 类型={f['kind']} 文件={f['filename']}"
+        )
+        extras: list[str] = [f"大小={format_size(int(f['size']))}"]
+        duration_text = format_duration(f["duration"])
+        if duration_text and f["kind"] in {"audio", "video"}:
+            extras.append(f"时长={duration_text}")
+        uploaded = format_timestamp(f["created_at"])
+        if uploaded:
+            extras.append(f"上传={uploaded}")
+        return head + "\n  " + " ".join(extras)
+
+    def _detailed_records(self, records: list[Any]) -> list[str]:
+        """批量生成详细摘要。"""
+        return [self._detailed_record(r) for r in records]
 
     @staticmethod
     def _parse_limit(value: Any, default: int) -> int:
@@ -371,14 +422,9 @@ class MediaPortalPlugin(Star):
         header_scope = f"分类 {category}" if category else "全部分类"
         header = f"媒体列表（{header_scope}，显示 {len(items)}/{total}）："
         lines = [header]
-        for row in items:
-            if isinstance(row, dict):
-                lines.append(
-                    f"- id={row.get('id')} 分类={row.get('category')} "
-                    f"文件={row.get('filename')} 类型={row.get('kind')}"
-                )
-            else:
-                lines.append(f"- {self._compact_record(row)}")
+        detailed = self._detailed_records(items)
+        for text in detailed:
+            lines.append(f"- {text}")
         if total > len(items):
             lines.append(
                 f"仅显示前 {len(items)} 条，共 {total} 条；"
@@ -412,8 +458,8 @@ class MediaPortalPlugin(Star):
             yield event.plain_result("没有找到匹配媒体。")
             return
         lines = [f"搜索结果（{len(records)}）："]
-        for record in records:
-            lines.append(f"- {self._compact_record(record)}")
+        for text in self._detailed_records(records):
+            lines.append(f"- {text}")
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -526,7 +572,7 @@ class MediaPortalPlugin(Star):
         limit: int = 20,
         kind: str = "",
     ) -> str:
-        """按分类列出媒体。
+        """按分类列出媒体。返回字段：id/分类/类型/文件名，以及大小、上传时间；图片附分辨率、音频附时长。
 
         Args:
             category(str): 分类名。
@@ -545,8 +591,8 @@ class MediaPortalPlugin(Star):
         if not records:
             return "该分类暂无媒体。"
         lines = [f"分类 {category} 的媒体："]
-        for record in records:
-            lines.append(f"- {self._compact_record(record)}")
+        for text in self._detailed_records(records):
+            lines.append(f"- {text}")
         return "\n".join(lines)
 
     @llm_tool(name="search_media")
@@ -557,7 +603,7 @@ class MediaPortalPlugin(Star):
         limit: int = 5,
         category: str = "",
     ) -> str:
-        """在媒体库中搜索媒体文件。
+        """在媒体库中搜索媒体文件。返回字段：id/分类/类型/文件名，以及大小、上传时间；图片附分辨率、音频附时长。
 
         Args:
             query(str): 文件名/描述关键词。
@@ -576,8 +622,8 @@ class MediaPortalPlugin(Star):
         if not records:
             return "未找到匹配媒体。"
         lines = ["搜索结果："]
-        for record in records:
-            lines.append(f"- {self._compact_record(record)}")
+        for text in self._detailed_records(records):
+            lines.append(f"- {text}")
         return "\n".join(lines)
 
     @llm_tool(name="get_media_url")
@@ -716,14 +762,16 @@ class MediaPortalPlugin(Star):
         category: str = "",
         description: str = "",
         tags: str = "",
+        filename: str = "",
     ) -> str:
-        """更新媒体的分类 / 描述 / 标签。任一留空即表示不修改该字段。
+        """更新媒体的分类 / 描述 / 标签 / 文件名。任一留空即表示不修改该字段。
 
         Args:
             media_id(string): 媒体 ID。
             category(string): 新分类名（留空则不变；指定不存在的分类会自动创建并搬移文件）。
             description(string): 新描述（留空不变）。
             tags(string): 新标签，英文逗号分隔；传入 "-" 表示清空。
+            filename(string): 新文件名（留空不变）；未带扩展名时自动沿用旧后缀，改名会让旧直链失效。
         """
         _ = event
         ok, message = await self._ensure_ready()
@@ -749,8 +797,17 @@ class MediaPortalPlugin(Star):
                     for item in tags_raw.replace("，", ",").split(",")
                     if item.strip()
                 ]
+        new_filename: str | None = None
+        filename_raw = (filename or "").strip()
+        if filename_raw:
+            new_filename = filename_raw
 
-        if new_category is None and new_description is None and new_tags is None:
+        if (
+            new_category is None
+            and new_description is None
+            and new_tags is None
+            and new_filename is None
+        ):
             return "未指定任何可更新字段。"
 
         try:
@@ -759,6 +816,7 @@ class MediaPortalPlugin(Star):
                 description=new_description,
                 tags=new_tags,
                 category=new_category,
+                filename=new_filename,
             )
         except Exception as exc:
             return f"更新失败: {exc}"

@@ -1,5 +1,20 @@
 # 更新日志
 
+## [0.2.1] - 2026-04-19
+
+### 新增
+- `update_media` / `tool_update_media` 新增 `filename` 参数，支持在保持分类与描述不变的前提下重命名媒体文件
+- 媒体库新增 `duration` 字段
+- `/media list`、`/media search`、`list_media_in_category`、`search_media` 附带 **大小 / 上传时间**，音频与视频额外附带 **时长**
+- WebUI支持修改文件名
+- 底部音频条新增最小化按钮
+
+### 优化
+- 修复 WebUI 媒体详情抽屉与底部音频条的遮挡问题
+
+### 兼容性
+- 新增软依赖 `mutagen>=1.47`（音频 / MP4 视频时长探测）
+
 ## [0.2.0] - 2026-04-19
 
 ### 新增
