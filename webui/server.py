@@ -714,11 +714,65 @@ class WebUIServer:
         if static_root.exists():
             self._app.mount("/static", StaticFiles(directory=static_root), name="static")
 
+            # 对 /static/*.(html|js|mjs|css) 响应追加 no-cache 头（走 ETag 协商），
+            # 避免浏览器 / 反代 / CDN 长时间强缓存旧版本；图片、字体、vendor 等
+            # 其它资源保持默认行为。
+            _no_cache_suffixes = (".html", ".htm", ".js", ".mjs", ".css")
+
+            @self._app.middleware("http")
+            async def _static_no_cache_middleware(request: Request, call_next):
+                response = await call_next(request)
+                try:
+                    path = request.url.path or ""
+                except Exception:
+                    path = ""
+                if path.startswith("/static/") and path.lower().endswith(_no_cache_suffixes):
+                    response.headers["Cache-Control"] = "no-cache, must-revalidate"
+                    if "Expires" in response.headers:
+                        del response.headers["Expires"]
+                return response
+
+        # 关键入口静态资源：版本指纹随这些文件的 mtime 变化，
+        # 避免浏览器 / 反代 / CDN 锁住旧版本。
+        asset_version_sources = [
+            index_file,
+            static_root / "styles.css",
+            static_root / "app.js",
+        ]
+
+        def _compute_asset_version() -> str:
+            parts: list[str] = []
+            for item in asset_version_sources:
+                try:
+                    parts.append(str(item.stat().st_mtime_ns))
+                except OSError:
+                    parts.append("0")
+            digest = hashlib.md5("-".join(parts).encode("utf-8")).hexdigest()
+            return digest[:10]
+
         @self._app.get("/", response_class=HTMLResponse)
         async def index_page() -> HTMLResponse:
             if not index_file.exists():
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail="前端文件不存在")
-            return HTMLResponse(index_file.read_text(encoding="utf-8"))
+            html = index_file.read_text(encoding="utf-8")
+            version = _compute_asset_version()
+            # 给入口 CSS / JS 追加版本指纹，绕过各级缓存。
+            html = html.replace(
+                'href="/static/styles.css"',
+                f'href="/static/styles.css?v={version}"',
+                1,
+            )
+            html = html.replace(
+                'src="/static/app.js"',
+                f'src="/static/app.js?v={version}"',
+                1,
+            )
+            response = HTMLResponse(html)
+            # index.html 本身永不缓存，保证每次都能拿到最新的版本号。
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
 
         @self._app.get("/api/health")
         async def health() -> dict[str, Any]:
