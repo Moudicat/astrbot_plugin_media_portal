@@ -1,51 +1,58 @@
 import { Icon } from "./Icon.js";
 
-const CATEGORY_NAME_RE = /^[A-Za-z0-9_\u4e00-\u9fa5][A-Za-z0-9_\-\u4e00-\u9fa5]{0,31}$/;
-
-function deriveState(categories) {
-  return {
-    editing: "",
-    editingName: "",
-    editingDescription: "",
-    editingError: "",
-    pruneBusy: false,
-    deleting: "",
-    snapshotKey: (categories || []).map((c) => c && c.category).join("|"),
-  };
-}
+const STAT_CARD_OPTIONS = [
+  { key: "total", label: "媒体总数", icon: "library", desc: "顶部首要指标" },
+  { key: "image", label: "图片数量", icon: "image", desc: "按类型统计" },
+  { key: "video", label: "视频数量", icon: "film", desc: "按类型统计" },
+  { key: "audio", label: "音频数量", icon: "music", desc: "按类型统计" },
+  { key: "cat", label: "分类总数", icon: "folder", desc: "当前分类数" },
+  { key: "size", label: "占用空间", icon: "database", desc: "总体大小" },
+];
 
 export const SettingsDialog = {
   name: "SettingsDialog",
   components: { Icon },
   props: {
     visible: { type: Boolean, default: false },
-    categories: { type: Array, default: () => [] },
+    statVisibility: {
+      type: Object,
+      default: () => ({
+        total: true,
+        image: true,
+        video: true,
+        audio: true,
+        cat: true,
+        size: true,
+      }),
+    },
   },
-  inject: {
-    appConfirm: { from: "confirm", default: null },
-  },
-  emits: ["close", "rename-category", "delete-category", "prune-categories"],
+  emits: ["close", "prune-categories", "update-stat-visibility"],
   data() {
-    return deriveState(this.categories);
+    return {
+      pruneBusy: false,
+      statOptions: STAT_CARD_OPTIONS,
+    };
+  },
+  computed: {
+    allOn() {
+      return STAT_CARD_OPTIONS.every(
+        (opt) => (this.statVisibility || {})[opt.key] !== false,
+      );
+    },
+    allOff() {
+      return STAT_CARD_OPTIONS.every(
+        (opt) => (this.statVisibility || {})[opt.key] === false,
+      );
+    },
   },
   watch: {
     visible(value) {
       if (value) {
-        Object.assign(this, deriveState(this.categories));
+        this.pruneBusy = false;
         window.addEventListener("keydown", this.onKey);
       } else {
         window.removeEventListener("keydown", this.onKey);
       }
-    },
-    categories: {
-      handler(value) {
-        // 分类列表变化时如果不在编辑中则重置快照
-        const key = (value || []).map((c) => c && c.category).join("|");
-        if (!this.editing && key !== this.snapshotKey) {
-          this.snapshotKey = key;
-        }
-      },
-      deep: true,
     },
   },
   beforeUnmount() {
@@ -55,102 +62,28 @@ export const SettingsDialog = {
     onKey(event) {
       if (!this.visible) return;
       if (event.key === "Escape") {
-        if (this.editing) {
-          this.cancelEdit();
-        } else {
-          this.$emit("close");
-        }
+        this.$emit("close");
       }
-    },
-    startEdit(item) {
-      if (!item || item.category === "default") return;
-      this.editing = item.category;
-      this.editingName = item.category;
-      this.editingDescription = item.description || "";
-      this.editingError = "";
-      this.$nextTick(() => {
-        const el = this.$refs[`name_${item.category}`];
-        const input = Array.isArray(el) ? el[0] : el;
-        if (input && typeof input.focus === "function") {
-          input.focus();
-          input.select?.();
-        }
-      });
-    },
-    cancelEdit() {
-      this.editing = "";
-      this.editingName = "";
-      this.editingDescription = "";
-      this.editingError = "";
-    },
-    validate(newName) {
-      const trimmed = (newName || "").trim();
-      if (!trimmed) return "分类名称不能为空";
-      if (!CATEGORY_NAME_RE.test(trimmed))
-        return "只能包含中英文、数字、下划线与连字符，长度 1-32";
-      if (trimmed === this.editing) return "";
-      const lower = trimmed.toLowerCase();
-      const duplicated = (this.categories || []).some(
-        (item) => item && (item.category || "").toString().toLowerCase() === lower,
-      );
-      if (duplicated) return "该分类已存在";
-      return "";
-    },
-    async submitEdit() {
-      const err = this.validate(this.editingName);
-      if (err) {
-        this.editingError = err;
-        return;
-      }
-      const payload = {
-        oldName: this.editing,
-        newName: (this.editingName || "").trim(),
-        description: (this.editingDescription || "").trim(),
-      };
-      this.$emit("rename-category", payload);
-      this.cancelEdit();
-    },
-    async confirmDelete(item) {
-      if (!item || item.category === "default") return;
-      const count = Number(item.count || 0);
-      const message =
-        count > 0
-          ? `分类「${item.category}」下还有 ${count} 个媒体，删除将一并清理。`
-          : `确认删除分类「${item.category}」？`;
-      const detail =
-        count > 0
-          ? "所有归属该分类的媒体记录与文件会被移除，无法撤销。"
-          : "";
-      const ok = this.appConfirm
-        ? await this.appConfirm({
-            title: "删除分类",
-            message,
-            detail,
-            confirmText: "删除分类",
-            tone: "danger",
-            icon: "trash-2",
-          })
-        : window.confirm(message);
-      if (!ok) return;
-      this.deleting = item.category;
-      this.$emit("delete-category", {
-        category: item.category,
-        removeFiles: true,
-      });
     },
     onPrune() {
       this.pruneBusy = true;
       this.$emit("prune-categories");
-      // 由父级负责实际调用；这里仅短暂锁定按钮避免重复点击
       setTimeout(() => {
         this.pruneBusy = false;
       }, 1200);
     },
-    formattedSize(item) {
-      return item?.size_human || "";
+    isOn(key) {
+      return (this.statVisibility || {})[key] !== false;
     },
-    isProtected(item) {
-      return item && item.category === "default";
+    toggleStat(key) {
+      this.$emit("update-stat-visibility", { [key]: !this.isOn(key) });
+    },
+    setAll(value) {
+      const payload = {};
+      for (const opt of STAT_CARD_OPTIONS) {
+        payload[opt.key] = value;
+      }
+      this.$emit("update-stat-visibility", payload);
     },
   },
   template: `
@@ -171,92 +104,51 @@ export const SettingsDialog = {
             <section class="settings-section">
               <div class="settings-section-head">
                 <div>
-                  <strong>分类管理</strong>
-                  <small class="muted">重命名、调整描述或删除非默认分类</small>
+                  <strong>首页统计卡片</strong>
+                  <small class="muted">控制媒体库首页顶部统计卡片的显示项</small>
                 </div>
-                <span class="chip mono">共 {{ categories.length }}</span>
+                <div class="settings-toolbar">
+                  <button
+                    class="ghost sm"
+                    :disabled="allOn"
+                    @click="setAll(true)"
+                    title="全部显示"
+                  >
+                    <Icon name="eye" :size="13" />
+                    <span>全部显示</span>
+                  </button>
+                  <button
+                    class="ghost sm"
+                    :disabled="allOff"
+                    @click="setAll(false)"
+                    title="全部隐藏"
+                  >
+                    <Icon name="eye-off" :size="13" />
+                    <span>全部隐藏</span>
+                  </button>
+                </div>
               </div>
-
-              <div v-if="!categories.length" class="settings-empty">
-                <Icon name="folder-x" :size="18" />
-                <span>暂无分类数据</span>
-              </div>
-
-              <ul v-else class="settings-category-list">
+              <ul class="settings-toggle-list">
                 <li
-                  v-for="item in categories"
-                  :key="item.category"
-                  class="settings-category-row"
-                  :class="{ editing: editing === item.category, protected: isProtected(item) }"
+                  v-for="opt in statOptions"
+                  :key="opt.key"
+                  class="settings-toggle"
+                  :class="{ disabled: !isOn(opt.key) }"
+                  @click="toggleStat(opt.key)"
                 >
-                  <template v-if="editing === item.category">
-                    <div class="settings-edit-form">
-                      <div class="field">
-                        <label>分类名</label>
-                        <div class="input-wrap">
-                          <span class="icon-slot"><Icon name="folder" :size="14" /></span>
-                          <input
-                            :ref="'name_' + item.category"
-                            v-model="editingName"
-                            maxlength="32"
-                            @keydown.enter.prevent="submitEdit"
-                            @keydown.esc.prevent="cancelEdit"
-                          />
-                        </div>
-                      </div>
-                      <div class="field">
-                        <label>描述</label>
-                        <input
-                          v-model="editingDescription"
-                          placeholder="简短描述，帮助自己或 AI 分辨用途"
-                          maxlength="120"
-                        />
-                      </div>
-                      <div v-if="editingError" class="settings-edit-error">
-                        <Icon name="alert-circle" :size="13" /> {{ editingError }}
-                      </div>
-                      <div class="settings-edit-actions">
-                        <button @click="cancelEdit">取消</button>
-                        <button class="primary" @click="submitEdit">
-                          <Icon name="check" :size="14" /> 保存
-                        </button>
-                      </div>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div class="settings-category-main">
-                      <div class="settings-category-icon"><Icon name="folder" :size="16" /></div>
-                      <div class="settings-category-info">
-                        <div class="settings-category-name">
-                          {{ item.category }}
-                          <span v-if="isProtected(item)" class="chip tiny">默认</span>
-                        </div>
-                        <small class="muted">
-                          {{ item.count || 0 }} 个
-                          <span v-if="formattedSize(item)"> · {{ formattedSize(item) }}</span>
-                          <span v-if="item.description"> · {{ item.description }}</span>
-                        </small>
-                      </div>
-                    </div>
-                    <div class="settings-category-actions">
-                      <button
-                        class="icon sm"
-                        :disabled="isProtected(item)"
-                        :title="isProtected(item) ? '默认分类不可重命名' : '重命名 / 改描述'"
-                        @click="startEdit(item)"
-                      >
-                        <Icon name="pencil" :size="14" />
-                      </button>
-                      <button
-                        class="icon sm danger"
-                        :disabled="isProtected(item) || deleting === item.category"
-                        :title="isProtected(item) ? '默认分类不可删除' : '删除分类'"
-                        @click="confirmDelete(item)"
-                      >
-                        <Icon name="trash-2" :size="14" />
-                      </button>
-                    </div>
-                  </template>
+                  <div class="settings-toggle-icon">
+                    <Icon :name="opt.icon" :size="14" />
+                  </div>
+                  <div class="settings-toggle-body">
+                    <span class="settings-toggle-title">{{ opt.label }}</span>
+                    <span class="settings-toggle-desc">{{ opt.desc }}</span>
+                  </div>
+                  <span
+                    class="switch"
+                    :class="{ on: isOn(opt.key) }"
+                    role="switch"
+                    :aria-checked="isOn(opt.key) ? 'true' : 'false'"
+                  ></span>
                 </li>
               </ul>
             </section>

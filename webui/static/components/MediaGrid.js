@@ -17,6 +17,17 @@ export const MediaGrid = {
     stats: { type: Object, default: () => ({}) },
     activeCategory: { type: String, default: "" },
     categories: { type: Array, default: () => [] },
+    statVisibility: {
+      type: Object,
+      default: () => ({
+        total: true,
+        image: true,
+        video: true,
+        audio: true,
+        cat: true,
+        size: true,
+      }),
+    },
   },
   emits: [
     "search",
@@ -31,6 +42,7 @@ export const MediaGrid = {
     "batch-change-category",
     "copy-link",
     "select-category",
+    "context-media",
   ],
   data() {
     return {
@@ -127,6 +139,10 @@ export const MediaGrid = {
         },
       ];
     },
+    visibleStatCards() {
+      const vis = this.statVisibility || {};
+      return this.statCards.filter((card) => vis[card.key] !== false);
+    },
     kindTabs() {
       return [
         { id: "", label: "全部", icon: "layers" },
@@ -186,10 +202,10 @@ export const MediaGrid = {
   },
   template: `
     <section style="display: flex; flex-direction: column; gap: 14px">
-      <div class="panel stat-grid">
+      <div v-if="visibleStatCards.length" class="panel stat-grid">
         <div
           class="stat-card"
-          v-for="card in statCards"
+          v-for="card in visibleStatCards"
           :key="card.key"
           :data-tone="card.tone"
         >
@@ -382,6 +398,7 @@ export const MediaGrid = {
           @preview="$emit('preview', $event)"
           @detail="$emit('detail', $event)"
           @copy-link="$emit('copy-link', $event)"
+          @context-media="$emit('context-media', $event)"
         />
       </div>
 

@@ -98,7 +98,7 @@ export const PlayerModal = {
           </div>
         </div>
 
-        <div class="player-body" v-if="item">
+        <div class="player-body" v-if="item" @click.self="$emit('close')">
           <button
             v-if="canNavigate"
             class="player-nav prev"

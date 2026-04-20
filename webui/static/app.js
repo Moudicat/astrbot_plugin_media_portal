@@ -8,17 +8,63 @@ import { PlayerModal } from "./components/PlayerModal.js";
 import { DataBrowser } from "./components/DataBrowser.js";
 import { DataFileModal } from "./components/DataFileModal.js";
 import { CategoryCreateDialog } from "./components/CategoryCreateDialog.js";
+import { CategoryRenameDialog } from "./components/CategoryRenameDialog.js";
 import { SettingsDialog } from "./components/SettingsDialog.js";
 import { BatchCategoryDialog } from "./components/BatchCategoryDialog.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import { Toast } from "./components/Toast.js";
 import { AudioDock } from "./components/AudioDock.js";
 import { UploadProgress } from "./components/UploadProgress.js";
+import { ContextMenu } from "./components/ContextMenu.js";
 
 const { createApp } = Vue;
 
 const THEME_KEY = "media_portal_theme";
 const AUTH_KEY = "media_portal_auth";
+const STAT_VISIBILITY_KEY = "media_portal_stat_visibility";
+
+const STAT_VISIBILITY_KEYS = ["total", "image", "video", "audio", "cat", "size"];
+
+function defaultStatVisibility() {
+  return STAT_VISIBILITY_KEYS.reduce((acc, key) => {
+    acc[key] = true;
+    return acc;
+  }, {});
+}
+
+function loadStatVisibility() {
+  const fallback = defaultStatVisibility();
+  try {
+    const raw = localStorage.getItem(STAT_VISIBILITY_KEY);
+    if (!raw) return fallback;
+    const data = JSON.parse(raw) || {};
+    const merged = { ...fallback };
+    for (const key of STAT_VISIBILITY_KEYS) {
+      if (typeof data[key] === "boolean") {
+        merged[key] = data[key];
+      }
+    }
+    return merged;
+  } catch (_e) {
+    return fallback;
+  }
+}
+
+function persistStatVisibility(state) {
+  try {
+    if (!state) {
+      localStorage.removeItem(STAT_VISIBILITY_KEY);
+      return;
+    }
+    const payload = {};
+    for (const key of STAT_VISIBILITY_KEYS) {
+      payload[key] = state[key] !== false;
+    }
+    localStorage.setItem(STAT_VISIBILITY_KEY, JSON.stringify(payload));
+  } catch (_e) {
+    // ignore storage errors
+  }
+}
 
 function getInitialTheme() {
   try {
@@ -80,12 +126,14 @@ createApp({
     DataBrowser,
     DataFileModal,
     CategoryCreateDialog,
+    CategoryRenameDialog,
     SettingsDialog,
     BatchCategoryDialog,
     ConfirmDialog,
     Toast,
     AudioDock,
     UploadProgress,
+    ContextMenu,
   },
   data() {
     const auth = loadInitialAuth();
@@ -122,7 +170,17 @@ createApp({
       uploadPanelOpen: false,
       categoryDialogVisible: false,
       settingsVisible: false,
+      statVisibility: loadStatVisibility(),
+      categoryRenameVisible: false,
+      categoryRenameTarget: null,
       batchCategoryVisible: false,
+      contextMenu: {
+        visible: false,
+        x: 0,
+        y: 0,
+        items: [],
+        payload: null,
+      },
       filters: {
         category: "",
         query: "",
@@ -655,6 +713,234 @@ createApp({
     },
     openSettings() {
       this.settingsVisible = true;
+    },
+    updateStatVisibility(next) {
+      if (!next || typeof next !== "object") return;
+      const merged = { ...this.statVisibility };
+      for (const key of Object.keys(next)) {
+        if (typeof next[key] === "boolean") merged[key] = next[key];
+      }
+      this.statVisibility = merged;
+      persistStatVisibility(merged);
+    },
+    openCategoryRename(item) {
+      if (!item || item.category === "default") return;
+      this.categoryRenameTarget = { ...item };
+      this.categoryRenameVisible = true;
+    },
+    closeCategoryRename() {
+      this.categoryRenameVisible = false;
+      this.categoryRenameTarget = null;
+    },
+    async submitCategoryRename(payload) {
+      if (!payload) return;
+      await this.renameCategory(payload);
+      this.closeCategoryRename();
+    },
+    isPcHoverDevice() {
+      try {
+        return (
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(hover: hover) and (pointer: fine)").matches
+        );
+      } catch (_e) {
+        return false;
+      }
+    },
+    openContextMenu(event, items, payload = null) {
+      if (!this.isPcHoverDevice()) return;
+      if (!Array.isArray(items) || !items.length) return;
+      const x =
+        event && typeof event.clientX === "number" ? event.clientX : 0;
+      const y =
+        event && typeof event.clientY === "number" ? event.clientY : 0;
+      this.contextMenu = {
+        visible: true,
+        x,
+        y,
+        items,
+        payload,
+      };
+    },
+    closeContextMenu() {
+      if (this.contextMenu.visible) {
+        this.contextMenu = {
+          visible: false,
+          x: 0,
+          y: 0,
+          items: [],
+          payload: null,
+        };
+      }
+    },
+    onContextMenuSelect(key) {
+      const payload = this.contextMenu.payload;
+      const kind = payload && payload.kind;
+      if (kind === "category") {
+        this.handleCategoryContextAction(key, payload.item);
+      } else if (kind === "media") {
+        this.handleMediaContextAction(key, payload.item);
+      }
+    },
+    onContextCategory({ event, item }) {
+      if (!item) return;
+      if (item.isAll) {
+        const items = [
+          {
+            key: "noop",
+            icon: "lock",
+            label: "无法修改",
+            disabled: true,
+          },
+        ];
+        this.openContextMenu(event, items, { kind: "category", item });
+        return;
+      }
+      const isDefault = item.category === "default";
+      const items = [
+        {
+          key: "rename",
+          icon: "pencil",
+          label: isDefault ? "默认分类不可改名" : "改名",
+          tone: "primary",
+          disabled: isDefault,
+        },
+        { divider: true, key: `cat_d_${item.category || ""}` },
+        {
+          key: "delete",
+          icon: "trash-2",
+          label: isDefault ? "默认分类不可删除" : "删除分类",
+          tone: "danger",
+          disabled: isDefault,
+        },
+      ];
+      this.openContextMenu(event, items, { kind: "category", item });
+    },
+    handleCategoryContextAction(key, item) {
+      if (!item) return;
+      if (item.category === "default") return;
+      if (key === "rename") {
+        this.openCategoryRename(item);
+      } else if (key === "delete") {
+        this.confirmDeleteCategory(item);
+      }
+    },
+    async confirmDeleteCategory(item) {
+      if (!item || item.category === "default") return;
+      const count = Number(item.count || 0);
+      const message =
+        count > 0
+          ? `分类「${item.category}」下还有 ${count} 个媒体，删除将一并清理。`
+          : `确认删除分类「${item.category}」？`;
+      const detail =
+        count > 0
+          ? "所有归属该分类的媒体记录与文件会被移除，无法撤销。"
+          : "";
+      const ok = await this.confirm({
+        title: "删除分类",
+        message,
+        detail,
+        confirmText: "删除分类",
+        tone: "danger",
+        icon: "trash-2",
+      });
+      if (!ok) return;
+      await this.deleteCategory({
+        category: item.category,
+        removeFiles: true,
+      });
+    },
+    onContextMedia({ event, item }) {
+      if (!item) return;
+      const items = [
+        {
+          key: "copy-link",
+          icon: "link-2",
+          label: "复制链接",
+          tone: "primary",
+        },
+        {
+          key: "save",
+          icon: "download",
+          label: "保存",
+          tone: "accent",
+        },
+        {
+          key: "open",
+          icon: "external-link",
+          label: "打开",
+        },
+        { divider: true, key: `d_${item.id || ""}` },
+        {
+          key: "delete",
+          icon: "trash-2",
+          label: "删除",
+          tone: "danger",
+        },
+      ];
+      this.openContextMenu(event, items, { kind: "media", item });
+    },
+    handleMediaContextAction(key, item) {
+      if (!item) return;
+      switch (key) {
+        case "copy-link":
+          this.copyMediaLink(item.id);
+          break;
+        case "save":
+          this.downloadMedia(item);
+          break;
+        case "open":
+          this.openMediaInNewTab(item);
+          break;
+        case "delete":
+          this.deleteMedia(item.id);
+          break;
+        default:
+          break;
+      }
+    },
+    buildMediaDirectUrl(item) {
+      if (!item) return "";
+      const category = encodeURIComponent(item.category || "default");
+      const filename = encodeURIComponent(item.filename || "");
+      const token = this.readonlyToken
+        ? `?token=${encodeURIComponent(this.readonlyToken)}`
+        : "";
+      return `/files/${category}/${filename}${token}`;
+    },
+    async downloadMedia(item) {
+      if (!item) return;
+      try {
+        let url = "";
+        try {
+          const detail = await this.request(`/api/media/${item.id}`);
+          url =
+            (detail && detail.public_url) || this.buildMediaDirectUrl(item);
+        } catch (_e) {
+          url = this.buildMediaDirectUrl(item);
+        }
+        if (!url) throw new Error("未能获取下载链接");
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = item.filename || "";
+        link.rel = "noopener";
+        link.target = "_blank";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch (error) {
+        this.notify(error.message || "保存失败", "error");
+      }
+    },
+    openMediaInNewTab(item) {
+      if (!item) return;
+      const url = this.buildMediaDirectUrl(item);
+      if (!url) {
+        this.notify("未能获取链接", "error");
+        return;
+      }
+      window.open(url, "_blank", "noopener");
     },
     openBatchCategory() {
       if (!this.selectedIds.length) {
@@ -1225,7 +1511,7 @@ createApp({
             <button class="icon" @click="refreshAll" title="刷新">
               <Icon name="refresh-cw" :size="16" />
             </button>
-            <button class="icon" @click="openSettings" title="设置（分类管理 / 清理）">
+            <button class="icon" @click="openSettings()" title="设置（分类管理 / 清理）">
               <Icon name="settings" :size="16" />
             </button>
             <button class="ghost" @click="logout()" title="退出">
@@ -1252,6 +1538,7 @@ createApp({
               @switch-mode="switchMode"
               @select-category="selectCategory"
               @request-create-category="categoryDialogVisible = true"
+              @context-category="onContextCategory"
             />
           </div>
 
@@ -1270,6 +1557,7 @@ createApp({
               :stats="mediaStats"
               :active-category="filters.category"
               :categories="categories"
+              :stat-visibility="statVisibility"
               @search="onSearch"
               @change-kind="onKindChange"
               @select-category="selectCategory"
@@ -1282,6 +1570,7 @@ createApp({
               @batch-delete="batchDelete"
               @batch-change-category="openBatchCategory"
               @copy-link="copyMediaLink"
+              @context-media="onContextMedia"
             />
 
             <DataBrowser
@@ -1359,11 +1648,18 @@ createApp({
 
         <SettingsDialog
           :visible="settingsVisible"
-          :categories="categories"
+          :stat-visibility="statVisibility"
           @close="settingsVisible = false"
-          @rename-category="renameCategory"
-          @delete-category="deleteCategory"
           @prune-categories="pruneCategories"
+          @update-stat-visibility="updateStatVisibility"
+        />
+
+        <CategoryRenameDialog
+          :visible="categoryRenameVisible"
+          :category="categoryRenameTarget"
+          :existing="categories"
+          @close="closeCategoryRename"
+          @submit="submitCategoryRename"
         />
 
         <BatchCategoryDialog
@@ -1382,6 +1678,15 @@ createApp({
           @cancel="cancelUpload"
           @dismiss="dismissUpload"
           @clear-finished="clearFinishedUploads"
+        />
+
+        <ContextMenu
+          :visible="contextMenu.visible"
+          :x="contextMenu.x"
+          :y="contextMenu.y"
+          :items="contextMenu.items"
+          @close="closeContextMenu"
+          @select="onContextMenuSelect"
         />
 
         <ConfirmDialog

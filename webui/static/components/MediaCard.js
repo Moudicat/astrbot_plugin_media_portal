@@ -15,7 +15,7 @@ export const MediaCard = {
     selected: { type: Boolean, default: false },
     readonlyToken: { type: String, default: "" },
   },
-  emits: ["toggle-select", "preview", "detail", "copy-link"],
+  emits: ["toggle-select", "preview", "detail", "copy-link", "context-media"],
   data() {
     return {
       imageLoaded: false,
@@ -67,9 +67,16 @@ export const MediaCard = {
     handleImgLoad() {
       this.imageLoaded = true;
     },
+    onContext(event) {
+      this.$emit("context-media", { event, item: this.item });
+    },
   },
   template: `
-    <article class="media-card" :class="{ selected }">
+    <article
+      class="media-card"
+      :class="{ selected }"
+      @contextmenu.prevent="onContext"
+    >
       <div class="media-preview" @click="$emit('preview', item)">
         <img
           v-if="item.kind === 'image'"
@@ -103,9 +110,6 @@ export const MediaCard = {
             {{ kindMeta.label }}
           </span>
           <div class="preview-actions" @click.stop>
-            <button class="icon sm" @click="$emit('preview', item)" title="预览">
-              <Icon name="play" :size="14" />
-            </button>
             <button class="icon sm" @click="$emit('copy-link', item.id)" title="复制链接">
               <Icon name="link-2" :size="14" />
             </button>

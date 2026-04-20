@@ -14,11 +14,15 @@ export const Sidebar = {
     "switch-mode",
     "select-category",
     "request-create-category",
+    "context-category",
     "close",
   ],
   methods: {
     addCategory() {
       this.$emit("request-create-category");
+    },
+    onCategoryContext(event, item) {
+      this.$emit("context-category", { event, item });
     },
     categoryIcon(name) {
       const lower = (name || "").toLowerCase();
@@ -69,6 +73,7 @@ export const Sidebar = {
             class="category-item"
             :class="{ active: activeCategory === '' }"
             @click="$emit('select-category', '')"
+            @contextmenu.prevent="onCategoryContext($event, { category: '', isAll: true, count: totalCount })"
           >
             <span class="icon-wrap"><Icon name="layers" :size="14" /></span>
             <span class="label">全部媒体</span>
@@ -80,6 +85,7 @@ export const Sidebar = {
             class="category-item"
             :class="{ active: activeCategory === item.category }"
             @click="$emit('select-category', item.category)"
+            @contextmenu.prevent="onCategoryContext($event, item)"
             :title="item.description || item.category"
           >
             <span class="icon-wrap"><Icon :name="categoryIcon(item.category)" :size="14" /></span>
