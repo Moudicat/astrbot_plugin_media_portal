@@ -9,6 +9,9 @@ import hmac
 import json
 import mimetypes
 import secrets
+import shutil
+import tarfile
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -17,6 +20,7 @@ from urllib.parse import quote
 import aiofiles
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -132,6 +136,24 @@ from ..core.utils import (
     slugify_category,
     unique_path,
 )
+
+
+def _copy_tree_overlay(src: Path, dst: Path) -> None:
+    """把 src 目录递归 overlay 到 dst（已存在同名文件会被覆盖，不会删除 dst 额外文件）。"""
+    if not src.is_dir():
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    for entry in src.iterdir():
+        target = dst / entry.name
+        if entry.is_dir():
+            _copy_tree_overlay(entry, target)
+        else:
+            try:
+                if target.exists() and target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
+                shutil.copy2(entry, target)
+            except Exception as exc:
+                logger.warning("恢复媒体文件失败: %s -> %s (%s)", entry, target, exc)
 
 
 class WebUIServer:
@@ -698,6 +720,203 @@ class WebUIServer:
             "kind": kind,
         }
 
+    async def _create_backup_archive(self, *, include_media: bool) -> FileResponse:
+        """打包 index.db + categories.json + (可选) media 目录 为 tar.gz 并以 FileResponse 返回。
+
+        生成的临时归档会在响应发送完成后由 BackgroundTask 清理。
+        """
+        categories_file = getattr(self.category_manager, "categories_file", None)
+        db_path: Path = getattr(self.media_manager, "db_path", self.media_manager.plugin_data_dir / "index.db")
+        media_root: Path = self.media_root
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        suffix = "full" if include_media else "meta"
+        base_name = f"media-portal-backup-{stamp}-{suffix}.tar.gz"
+
+        tmp_dir = Path(tempfile.mkdtemp(prefix="media_portal_backup_"))
+        archive_path = tmp_dir / base_name
+
+        def _build_archive() -> None:
+            try:
+                with tarfile.open(archive_path, "w:gz", compresslevel=5) as tar:
+                    manifest: dict[str, Any] = {
+                        "version": 1,
+                        "created_at": int(time.time()),
+                        "has_media": bool(include_media),
+                    }
+                    if db_path and db_path.exists() and db_path.is_file():
+                        tar.add(db_path, arcname="index.db")
+                        manifest["has_db"] = True
+                    if (
+                        categories_file
+                        and isinstance(categories_file, Path)
+                        and categories_file.exists()
+                        and categories_file.is_file()
+                    ):
+                        tar.add(categories_file, arcname="categories.json")
+                        manifest["has_categories"] = True
+                    if include_media and media_root and media_root.exists() and media_root.is_dir():
+                        tar.add(media_root, arcname="media")
+
+                    manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+                    info = tarfile.TarInfo(name="manifest.json")
+                    info.size = len(manifest_bytes)
+                    info.mtime = int(time.time())
+                    import io as _io
+
+                    tar.addfile(info, _io.BytesIO(manifest_bytes))
+            except Exception:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+
+        try:
+            await asyncio.to_thread(_build_archive)
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"生成备份失败: {exc}",
+            ) from exc
+
+        def _cleanup() -> None:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        response = FileResponse(
+            path=archive_path,
+            media_type="application/gzip",
+            filename=base_name,
+            background=BackgroundTask(_cleanup),
+        )
+        response.headers["Content-Disposition"] = (
+            f"attachment; filename*=UTF-8''{quote(base_name)}"
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    async def _restore_backup_archive(
+        self,
+        *,
+        upload: UploadFile,
+        replace_media: bool,
+    ) -> dict[str, Any]:
+        """从上传的 tar.gz 恢复 index.db / categories.json / media 目录。
+
+        - ``replace_media=True`` 时会先清空 ``media_root`` 再解压归档内的 ``media/``；
+        - 为 False 则只覆盖同名文件，保留当前磁盘上多出来的文件（更安全）。
+        恢复过程中 DB 连接会被关闭，完成后重新初始化。
+        """
+        staging_root = Path(tempfile.mkdtemp(prefix="media_portal_restore_"))
+        archive_path = staging_root / "upload.tar.gz"
+        extracted_root = staging_root / "extracted"
+        extracted_root.mkdir(parents=True, exist_ok=True)
+
+        try:
+            bytes_written = 0
+            hard_limit = 20 * 1024 * 1024 * 1024  # 20GB 上限，避免磁盘写爆
+            try:
+                async with aiofiles.open(archive_path, "wb") as fp:
+                    while True:
+                        chunk = await upload.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        bytes_written += len(chunk)
+                        if bytes_written > hard_limit:
+                            raise HTTPException(
+                                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                detail="备份文件过大",
+                            )
+                        await fp.write(chunk)
+            finally:
+                await upload.close()
+
+            if bytes_written == 0:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="空文件")
+
+            def _extract_safe() -> None:
+                with tarfile.open(archive_path, "r:gz") as tar:
+                    members = []
+                    for member in tar.getmembers():
+                        name = member.name.replace("\\", "/").lstrip("/")
+                        if not name or name.startswith("../") or "/../" in name:
+                            continue
+                        member.name = name
+                        members.append(member)
+                    tar.extractall(extracted_root, members=members)
+
+            try:
+                await asyncio.to_thread(_extract_safe)
+            except tarfile.TarError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail=f"归档格式非法: {exc}",
+                ) from exc
+
+            has_db = (extracted_root / "index.db").exists()
+            has_categories = (extracted_root / "categories.json").exists()
+            has_media_dir = (extracted_root / "media").exists() and (extracted_root / "media").is_dir()
+
+            if not (has_db or has_categories or has_media_dir):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="归档中未包含 index.db / categories.json / media，无法恢复",
+                )
+
+            try:
+                await self.media_manager.close()
+            except Exception as exc:
+                logger.warning("关闭媒体索引数据库失败，继续恢复: %s", exc)
+
+            restored: list[str] = []
+
+            try:
+                if has_db:
+                    target_db = Path(self.media_manager.db_path)
+                    target_db.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(extracted_root / "index.db", target_db)
+                    restored.append("index.db")
+
+                if has_categories:
+                    categories_file = getattr(self.category_manager, "categories_file", None)
+                    if isinstance(categories_file, Path):
+                        categories_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(extracted_root / "categories.json", categories_file)
+                        restored.append("categories.json")
+
+                if has_media_dir:
+                    target_media = self.media_root
+                    if replace_media and target_media.exists():
+                        for child in target_media.iterdir():
+                            try:
+                                if child.is_dir():
+                                    shutil.rmtree(child, ignore_errors=True)
+                                else:
+                                    child.unlink(missing_ok=True)
+                            except Exception as exc:
+                                logger.warning("清理旧媒体目录项失败: %s (%s)", child, exc)
+                    target_media.mkdir(parents=True, exist_ok=True)
+                    _copy_tree_overlay(extracted_root / "media", target_media)
+                    restored.append("media/")
+            finally:
+                try:
+                    await self.media_manager.initialize()
+                except Exception as exc:
+                    logger.error("恢复后重新初始化数据库失败: %s", exc)
+                try:
+                    self.category_manager._load()  # type: ignore[attr-defined]
+                    self.category_manager.sync_with_filesystem()
+                except Exception as exc:
+                    logger.warning("恢复后刷新 category_manager 失败: %s", exc)
+
+            return {
+                "restored": restored,
+                "replace_media": bool(replace_media),
+                "bytes": bytes_written,
+            }
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
     def _setup_routes(self) -> None:
         static_root = Path(__file__).resolve().parent / "static"
         index_file = static_root / "index.html"
@@ -1195,3 +1414,23 @@ class WebUIServer:
                 payload["content"] = decoded_text
                 payload["encoding"] = used_encoding
             return payload
+
+        @self._app.get("/api/backup/export")
+        async def backup_export(
+            include_media: int = 1,
+            token: str = Depends(self._auth_dependency()),
+        ) -> FileResponse:
+            _ = token
+            return await self._create_backup_archive(include_media=bool(include_media))
+
+        @self._app.post("/api/backup/import")
+        async def backup_import(
+            archive: UploadFile = File(...),
+            replace_media: int = Form(0),
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            return await self._restore_backup_archive(
+                upload=archive,
+                replace_media=bool(replace_media),
+            )

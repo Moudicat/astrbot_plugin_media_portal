@@ -1,5 +1,21 @@
 <template>
   <div class="app-root">
+    <transition name="fade">
+      <div v-if="globalDragging" class="global-drop-overlay" @click.stop>
+        <div class="global-drop-card">
+          <Icon name="upload-cloud" :size="48" />
+          <h3>{{ $t("upload.globalDropTitle") }}</h3>
+          <p class="muted">
+            {{
+              $t("upload.globalDropHint", {
+                category: media.filters.category || "default",
+              })
+            }}
+          </p>
+        </div>
+      </div>
+    </transition>
+
     <TopBar
       :theme="ui.theme"
       :selected-count="media.selectedIds.length"
@@ -127,9 +143,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, provide, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import Icon from "@/components/common/Icon.vue";
 import Sidebar from "@/components/layout/Sidebar.vue";
 import TopBar from "@/components/layout/TopBar.vue";
 import MediaDrawer from "@/components/media/MediaDrawer.vue";
@@ -189,6 +206,10 @@ const settingsVisible = ref(false);
 
 const viewMode = computed(() => (route.name === "data" ? "data" : "media"));
 
+const globalDragging = ref(false);
+let dragDepth = 0;
+let dragHideTimer: ReturnType<typeof setTimeout> | null = null;
+
 provide("layoutActions", {
   openDetail,
   previewItem,
@@ -206,6 +227,8 @@ upload.setRefreshHandler(() => {
 upload.setErrorHandler((text) => toast.push(text, "error"));
 
 onMounted(async () => {
+  ui.applyTheme();
+  attachGlobalUploadHandlers();
   if (!auth.token) return;
   try {
     await bootstrap();
@@ -215,6 +238,10 @@ onMounted(async () => {
     await auth.logout(false);
     router.replace({ name: "login" });
   }
+});
+
+onBeforeUnmount(() => {
+  detachGlobalUploadHandlers();
 });
 
 async function bootstrap() {
@@ -318,6 +345,7 @@ async function updateMedia(payload: Record<string, any>) {
     const updated = await media.patch(payload.id, payload);
     toast.push(t("drawer.saved"), "success");
     selectedMedia.value = updated;
+    drawerVisible.value = false;
     await Promise.all([category.fetch(), media.fetchList(), media.fetchStats()]);
   } catch (error) {
     toast.push((error as Error).message, "error");
@@ -392,6 +420,182 @@ function downloadDataFile(payload: { path: string; name: string }) {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+function hasFiles(event: DragEvent): boolean {
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  const anyTypes = types as unknown as { contains?: (v: string) => boolean; length: number };
+  if (typeof anyTypes.contains === "function") {
+    return anyTypes.contains("Files");
+  }
+  return Array.prototype.indexOf.call(types, "Files") >= 0;
+}
+
+function onWindowDragEnter(event: DragEvent) {
+  if (!hasFiles(event)) return;
+  if (route.name === "login") return;
+  event.preventDefault();
+  dragDepth += 1;
+  if (dragHideTimer) {
+    clearTimeout(dragHideTimer);
+    dragHideTimer = null;
+  }
+  globalDragging.value = true;
+}
+
+function onWindowDragOver(event: DragEvent) {
+  if (!hasFiles(event)) return;
+  if (route.name === "login") return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  globalDragging.value = true;
+}
+
+function onWindowDragLeave(event: DragEvent) {
+  if (!hasFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) {
+    if (dragHideTimer) clearTimeout(dragHideTimer);
+    dragHideTimer = setTimeout(() => {
+      globalDragging.value = false;
+      dragHideTimer = null;
+    }, 80);
+  }
+}
+
+function onWindowDrop(event: DragEvent) {
+  const hasPayload = hasFiles(event);
+  dragDepth = 0;
+  if (dragHideTimer) {
+    clearTimeout(dragHideTimer);
+    dragHideTimer = null;
+  }
+  globalDragging.value = false;
+  if (!hasPayload) return;
+  if (route.name === "login") return;
+  event.preventDefault();
+  event.stopPropagation();
+  const incoming = Array.from(event.dataTransfer?.files || []);
+  if (!incoming.length) return;
+  enqueueDropped(incoming);
+}
+
+function onWindowPaste(event: ClipboardEvent) {
+  if (route.name === "login") return;
+  if (!auth.token) return;
+  const target = event.target as HTMLElement | null;
+  if (target) {
+    const tag = (target.tagName || "").toLowerCase();
+    if (
+      tag === "input" ||
+      tag === "textarea" ||
+      target.isContentEditable ||
+      target.closest?.("input, textarea, [contenteditable='true']")
+    ) {
+      return;
+    }
+  }
+  const clipboardFiles: File[] = [];
+  const items = event.clipboardData?.items;
+  if (items && items.length) {
+    for (const item of Array.from(items)) {
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) clipboardFiles.push(normalizePastedFile(f));
+      }
+    }
+  }
+  const dtFiles = Array.from(event.clipboardData?.files || []);
+  for (const f of dtFiles) {
+    if (!clipboardFiles.some((x) => x.name === f.name && x.size === f.size)) {
+      clipboardFiles.push(normalizePastedFile(f));
+    }
+  }
+  if (!clipboardFiles.length) return;
+  event.preventDefault();
+  enqueueDropped(clipboardFiles, { fromPaste: true });
+}
+
+function normalizePastedFile(file: File): File {
+  if (file.name && file.name !== "image.png" && file.name !== "blob") return file;
+  const ext = guessExtFromType(file.type);
+  if (!ext) return file;
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\..+$/, "")
+    .replace("T", "-");
+  const newName = `clipboard-${stamp}.${ext}`;
+  try {
+    return new File([file], newName, {
+      type: file.type,
+      lastModified: file.lastModified || Date.now(),
+    });
+  } catch (_e) {
+    return file;
+  }
+}
+
+function guessExtFromType(mime: string): string {
+  if (!mime) return "";
+  const map: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+    "image/svg+xml": "svg",
+  };
+  return map[mime] || "";
+}
+
+function enqueueDropped(incoming: File[], opts: { fromPaste?: boolean } = {}) {
+  if (!auth.token) return;
+  if (!incoming.length) return;
+  const targetCategory = media.filters.category || "default";
+  const maxBytes = config.maxBytes;
+  const maxMb = config.maxMb;
+  const accepted: File[] = [];
+  const rejected: File[] = [];
+  for (const file of incoming) {
+    if (maxBytes > 0 && Number(file.size) > maxBytes) rejected.push(file);
+    else accepted.push(file);
+  }
+  if (rejected.length) {
+    const names = rejected.map((f) => f.name).join("、");
+    toast.push(
+      t("upload.skippedOversize", { count: rejected.length, mb: maxMb, names }),
+      "warning",
+    );
+  }
+  if (!accepted.length) return;
+  for (const file of accepted) {
+    upload.enqueue(file, targetCategory, "");
+  }
+  toast.push(
+    opts.fromPaste
+      ? t("upload.pasteQueued", { count: accepted.length, category: targetCategory })
+      : t("upload.dropQueued", { count: accepted.length, category: targetCategory }),
+    "success",
+  );
+}
+
+function attachGlobalUploadHandlers() {
+  window.addEventListener("dragenter", onWindowDragEnter);
+  window.addEventListener("dragover", onWindowDragOver);
+  window.addEventListener("dragleave", onWindowDragLeave);
+  window.addEventListener("drop", onWindowDrop);
+  window.addEventListener("paste", onWindowPaste);
+}
+
+function detachGlobalUploadHandlers() {
+  window.removeEventListener("dragenter", onWindowDragEnter);
+  window.removeEventListener("dragover", onWindowDragOver);
+  window.removeEventListener("dragleave", onWindowDragLeave);
+  window.removeEventListener("drop", onWindowDrop);
+  window.removeEventListener("paste", onWindowPaste);
 }
 
 function onUploadFiles(payload: { category: string; description: string; files: File[] }) {

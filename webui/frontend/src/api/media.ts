@@ -21,3 +21,26 @@ export const mediaApi = {
   saveUrl: (payload: SaveUrlPayload) =>
     request<unknown>("/api/media/save-url", { method: "POST", body: payload }),
 };
+
+export interface BackupImportResult {
+  restored: string[];
+  replace_media: boolean;
+  bytes: number;
+}
+
+export const backupApi = {
+  exportUrl: (includeMedia = true) =>
+    `/api/backup/export${buildQuery({ include_media: includeMedia ? 1 : 0 })}`,
+  importArchive: async (
+    file: File,
+    opts: { replaceMedia?: boolean } = {},
+  ): Promise<BackupImportResult> => {
+    const form = new FormData();
+    form.append("archive", file, file.name || "backup.tar.gz");
+    form.append("replace_media", opts.replaceMedia ? "1" : "0");
+    return request<BackupImportResult>("/api/backup/import", {
+      method: "POST",
+      form,
+    });
+  },
+};

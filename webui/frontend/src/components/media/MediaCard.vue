@@ -32,6 +32,10 @@
           <Icon :name="kindMeta.icon" :size="12" />
           {{ kindMeta.label }}
         </span>
+        <span v-if="durationLabel" class="preview-duration">
+          <Icon name="clock" :size="11" />
+          {{ durationLabel }}
+        </span>
         <div class="preview-actions" @click.stop>
           <button class="icon sm" :title="$t('card.copyLink')" @click="$emit('copy-link', item.id)">
             <Icon name="link-2" :size="14" />
@@ -52,12 +56,44 @@
         />
       </label>
       <div class="card-meta">
-        <strong :title="item.filename">{{ item.filename }}</strong>
+        <strong
+          :title="item.filename"
+          :class="{ 'meta-name-clickable': ui.gridMode === 'list' }"
+          @click="onNameClick"
+        >{{ item.filename }}</strong>
         <div class="sub">
           <span>{{ item.category }}</span>
           <span class="dot"></span>
           <span class="mono">{{ sizeLabel }}</span>
+          <template v-if="durationLabel">
+            <span class="dot"></span>
+            <span class="mono">{{ durationLabel }}</span>
+          </template>
+          <template v-if="dateLabel">
+            <span class="dot"></span>
+            <span class="mono">{{ dateLabel }}</span>
+          </template>
         </div>
+      </div>
+      <div v-if="ui.gridMode === 'list'" class="list-actions" @click.stop>
+        <button
+          type="button"
+          class="icon sm"
+          :title="$t('card.copyLink')"
+          :aria-label="$t('card.copyLink')"
+          @click="$emit('copy-link', item.id)"
+        >
+          <Icon name="link-2" :size="14" />
+        </button>
+        <button
+          type="button"
+          class="icon sm"
+          :title="$t('card.detail')"
+          :aria-label="$t('card.detail')"
+          @click="$emit('detail', item)"
+        >
+          <Icon name="settings-2" :size="14" />
+        </button>
       </div>
     </div>
   </article>
@@ -68,7 +104,11 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import { buildMediaDirectUrl, buildThumbUrl } from "@/utils/url";
+import { formatDateShort, formatDuration } from "@/utils/format";
+import { useUiStore } from "@/stores/ui";
 import type { MediaItem } from "@/api/types";
+
+const ui = useUiStore();
 
 interface Props {
   item: MediaItem;
@@ -126,6 +166,11 @@ const kindMeta = computed(() => {
 });
 
 const sizeLabel = computed(() => props.item.size_human || `${props.item.size || 0} B`);
+const dateLabel = computed(() => formatDateShort(props.item.created_at));
+const durationLabel = computed(() => {
+  if (props.item.kind !== "audio" && props.item.kind !== "video") return "";
+  return formatDuration(props.item.duration);
+});
 
 function handleImgError() {
   if (!imageError.value) imageError.value = true;
@@ -136,4 +181,16 @@ function handleImgLoad() {
 function onContext(event: MouseEvent) {
   emit("context-media", { event, item: props.item });
 }
+function onNameClick() {
+  if (ui.gridMode === "list") emit("preview", props.item);
+}
 </script>
+
+<style scoped>
+.meta-name-clickable {
+  cursor: pointer;
+}
+.meta-name-clickable:hover {
+  color: var(--primary);
+}
+</style>

@@ -18,3 +18,32 @@ export function formatTimestamp(raw: number | string | null | undefined): string
     d.getHours(),
   )}:${pad(d.getMinutes())}`;
 }
+
+export function formatDateShort(raw: number | string | null | undefined): string {
+  if (raw === undefined || raw === null || raw === "") return "";
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const ms = num > 1e12 ? num : num * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export function formatDuration(raw: number | string | null | undefined): string {
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const total = Math.round(num);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${minutes}:${pad(seconds)}`;
+}

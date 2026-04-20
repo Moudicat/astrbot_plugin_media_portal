@@ -78,11 +78,19 @@
       "audioLabel": "音声",
       "categoryLabel": "カテゴリ",
       "sizeLabel": "使用容量"
+    },
+    "viewMode": {
+      "label": "表示モード",
+      "card": "カード",
+      "list": "リスト",
+      "toCard": "カード表示に切替",
+      "toList": "リスト表示に切替"
     }
   },
   "card": {
     "copyLink": "リンクをコピー",
-    "detail": "詳細"
+    "detail": "詳細",
+    "preview": "プレビュー"
   },
   "drawer": {
     "title": "メディア詳細",
@@ -143,7 +151,11 @@
     "filenamePlaceholder": "例 cat.mp4",
     "submit": "保存する",
     "skippedOversize": "{count} 個の {mb}MB 超ファイルをスキップ：{names}",
-    "remoteSaved": "リモートメディアを保存しました"
+    "remoteSaved": "リモートメディアを保存しました",
+    "globalDropTitle": "ドロップで現在のカテゴリにアップロード",
+    "globalDropHint": "ファイルは「{category}」にアップロードされます",
+    "dropQueued": "{count} 件をキューに追加 → {category}",
+    "pasteQueued": "クリップボードの {count} 件をキューに追加 → {category}"
   },
   "uploadProgress": {
     "uploading": "アップロード中 · {count} · {progress}%",
@@ -283,6 +295,41 @@
     "pruneBusy": "実行中...",
     "languageTitle": "言語",
     "languageHint": "表示言語を切り替え",
+    "appearanceTitle": "外観",
+    "themeColor": "テーマカラー",
+    "themeColorHint": "ボタン・アクセント・アクティブ状態に使用",
+    "gridDensity": "グリッド密度",
+    "gridDensityHint": "カードサイズ / 余白を調整",
+    "density": {
+      "compact": "コンパクト",
+      "cozy": "標準",
+      "comfortable": "ゆったり"
+    },
+    "pageSize": "1 ページあたりの件数",
+    "pageSizeHint": "ライブラリのページサイズを調整",
+    "backupTitle": "バックアップ / 復元",
+    "backupExport": "バックアップ出力",
+    "backupExportHint": "DB・カテゴリ・メディアを tar.gz に圧縮",
+    "backupExportFull": "フル (メディア含む)",
+    "backupExportMeta": "メタデータのみ",
+    "backupExportDone": "バックアップのダウンロードを開始",
+    "backupExportFailed": "バックアップ失敗",
+    "backupBusy": "処理中...",
+    "backupImport": "バックアップから復元",
+    "backupImportHint": "DB とカテゴリを上書きします。メディア上書きも選択可",
+    "backupReplaceMedia": "メディアを上書き",
+    "backupImportBtn": "バックアップを選択",
+    "backupImportConfirm": "現在のデータが上書きされます。続行しますか？",
+    "backupImportDone": "復元しました: {parts}",
+    "backupImportFailed": "復元失敗",
+    "settingsIo": "UI 設定",
+    "settingsIoHint": "現在の UI 設定をエクスポート / インポート",
+    "settingsExport": "設定を出力",
+    "settingsImport": "設定を取り込み",
+    "settingsExportDone": "設定を出力しました",
+    "settingsExportFailed": "出力失敗",
+    "settingsImportDone": "設定を取り込みました",
+    "settingsImportFailed": "取り込み失敗",
     "stat": {
       "total": "メディア総数",
       "totalDesc": "上部の主要指標",

@@ -13,6 +13,8 @@ export interface MediaItem {
   description?: string;
   tags?: string[];
   created_at?: number | string;
+  updated_at?: number | string;
+  duration?: number;
   public_url?: string;
   // 预览相关：在 data 浏览场景下我们会动态塞 directUrl
   directUrl?: string;

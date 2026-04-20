@@ -1,6 +1,13 @@
 import { defineStore } from "pinia";
 import { mediaApi } from "@/api/media";
 import type { MediaItem, MediaStats } from "@/api/types";
+import { safeGet } from "@/utils/storage";
+
+function initialPageSize(): number {
+  const raw = safeGet<number>("media_portal_page_size", 40);
+  const allowed = [20, 40, 60, 80, 120];
+  return allowed.includes(raw) ? raw : 40;
+}
 
 export interface MediaFilters {
   category: string;
@@ -21,7 +28,7 @@ export const useMediaStore = defineStore("media", {
       query: "",
       kind: "",
       page: 1,
-      page_size: 20,
+      page_size: initialPageSize(),
     } as MediaFilters,
     pagination: {
       total: 0,

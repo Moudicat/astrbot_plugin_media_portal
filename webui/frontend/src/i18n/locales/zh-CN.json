@@ -78,11 +78,19 @@
       "audioLabel": "音频",
       "categoryLabel": "分类",
       "sizeLabel": "占用空间"
+    },
+    "viewMode": {
+      "label": "显示模式",
+      "card": "卡片",
+      "list": "列表",
+      "toCard": "切换为卡片",
+      "toList": "切换为列表"
     }
   },
   "card": {
     "copyLink": "复制链接",
-    "detail": "详情"
+    "detail": "详情",
+    "preview": "预览"
   },
   "drawer": {
     "title": "媒体详情",
@@ -143,7 +151,11 @@
     "filenamePlaceholder": "例如 cat.mp4",
     "submit": "确认保存",
     "skippedOversize": "已跳过 {count} 个超过 {mb}MB 的文件：{names}",
-    "remoteSaved": "远程媒体已保存"
+    "remoteSaved": "远程媒体已保存",
+    "globalDropTitle": "松开即可上传到当前分类",
+    "globalDropHint": "将文件放入将直接上传到「{category}」",
+    "dropQueued": "已加入上传队列 · {count} 个文件 → {category}",
+    "pasteQueued": "已加入上传队列 · {count} 个剪贴板文件 → {category}"
   },
   "uploadProgress": {
     "uploading": "上传中 · {count} · {progress}%",
@@ -283,6 +295,41 @@
     "pruneBusy": "清理中...",
     "languageTitle": "语言",
     "languageHint": "切换界面展示语言",
+    "appearanceTitle": "外观",
+    "themeColor": "主题色",
+    "themeColorHint": "用于按钮、强调色、激活状态",
+    "gridDensity": "网格密度",
+    "gridDensityHint": "调整卡片大小 / 间距",
+    "density": {
+      "compact": "紧凑",
+      "cozy": "标准",
+      "comfortable": "宽松"
+    },
+    "pageSize": "每页条数",
+    "pageSizeHint": "调整媒体库分页大小",
+    "backupTitle": "备份 / 恢复",
+    "backupExport": "导出备份",
+    "backupExportHint": "打包数据库、分类信息与媒体目录为 tar.gz",
+    "backupExportFull": "完整导出 (含媒体)",
+    "backupExportMeta": "仅元数据",
+    "backupExportDone": "备份已开始下载",
+    "backupExportFailed": "备份失败",
+    "backupBusy": "处理中...",
+    "backupImport": "从备份恢复",
+    "backupImportHint": "将覆盖当前数据库与分类信息；可选覆盖媒体目录",
+    "backupReplaceMedia": "覆盖媒体目录",
+    "backupImportBtn": "选择备份文件",
+    "backupImportConfirm": "导入将覆盖当前数据，确定继续吗？",
+    "backupImportDone": "恢复完成：{parts}",
+    "backupImportFailed": "恢复失败",
+    "settingsIo": "界面设置",
+    "settingsIoHint": "导出 / 导入当前界面偏好配置",
+    "settingsExport": "导出设置",
+    "settingsImport": "导入设置",
+    "settingsExportDone": "设置已导出",
+    "settingsExportFailed": "导出失败",
+    "settingsImportDone": "设置已导入",
+    "settingsImportFailed": "导入失败",
     "stat": {
       "total": "媒体总数",
       "totalDesc": "顶部首要指标",

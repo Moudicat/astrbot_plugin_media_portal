@@ -16,56 +16,58 @@
           <strong>{{ $t("drawer.emptyTitle") }}</strong>
           <span>{{ $t("drawer.emptyHint") }}</span>
         </div>
-        <div v-else class="drawer-content">
-          <div class="drawer-preview" @click="$emit('preview', media)">
-            <img v-if="media.kind === 'image'" :src="fileUrl" :alt="media.filename" />
-            <video v-else-if="media.kind === 'video'" :src="fileUrl" muted preload="metadata"></video>
-            <div v-else class="audio-placeholder">
-              <div class="disc">
-                <Icon :name="media.kind === 'audio' ? 'music' : 'file'" :size="24" />
+        <template v-else>
+          <div class="drawer-content">
+            <div class="drawer-preview" @click="$emit('preview', media)">
+              <img v-if="media.kind === 'image'" :src="fileUrl" :alt="media.filename" />
+              <video v-else-if="media.kind === 'video'" :src="fileUrl" muted preload="metadata"></video>
+              <div v-else class="audio-placeholder">
+                <div class="disc">
+                  <Icon :name="media.kind === 'audio' ? 'music' : 'file'" :size="24" />
+                </div>
+                <small>{{ media.kind }}</small>
               </div>
-              <small>{{ media.kind }}</small>
             </div>
-          </div>
 
-          <dl class="drawer-meta">
-            <dt>{{ $t("drawer.id") }}</dt>
-            <dd>{{ media.id }}</dd>
-            <dt>{{ $t("drawer.kind") }}</dt>
-            <dd><span class="badge primary">{{ media.kind }}</span></dd>
-            <dt>{{ $t("drawer.size") }}</dt>
-            <dd>{{ sizeLabel }}</dd>
-            <dt v-if="createdAtLabel">{{ $t("drawer.created") }}</dt>
-            <dd v-if="createdAtLabel">{{ createdAtLabel }}</dd>
-          </dl>
+            <dl class="drawer-meta">
+              <dt>{{ $t("drawer.id") }}</dt>
+              <dd>{{ media.id }}</dd>
+              <dt>{{ $t("drawer.kind") }}</dt>
+              <dd><span class="badge primary">{{ media.kind }}</span></dd>
+              <dt>{{ $t("drawer.size") }}</dt>
+              <dd>{{ sizeLabel }}</dd>
+              <dt v-if="createdAtLabel">{{ $t("drawer.created") }}</dt>
+              <dd v-if="createdAtLabel">{{ createdAtLabel }}</dd>
+            </dl>
 
-          <div class="field">
-            <label>{{ $t("drawer.fieldFilename") }}</label>
-            <input v-model="filename" :placeholder="originalFilename || $t('drawer.fieldFilenamePlaceholder')" />
-            <small v-if="filenameDirty" class="field-hint-warn">
-              <Icon name="alert-triangle" :size="12" style="vertical-align: -2px" />
-              {{ $t("drawer.fieldFilenameWarn") }}
-            </small>
-          </div>
+            <div class="field">
+              <label>{{ $t("drawer.fieldFilename") }}</label>
+              <input v-model="filename" :placeholder="originalFilename || $t('drawer.fieldFilenamePlaceholder')" />
+              <small v-if="filenameDirty" class="field-hint-warn">
+                <Icon name="alert-triangle" :size="12" style="vertical-align: -2px" />
+                {{ $t("drawer.fieldFilenameWarn") }}
+              </small>
+            </div>
 
-          <div class="field">
-            <label>{{ $t("drawer.fieldCategory") }}</label>
-            <select v-model="category">
-              <option v-if="!hasDefaultCategory" value="default">default</option>
-              <option v-for="item in categories" :key="item.category" :value="item.category">
-                {{ item.category }}
-              </option>
-            </select>
-          </div>
+            <div class="field">
+              <label>{{ $t("drawer.fieldCategory") }}</label>
+              <select v-model="category">
+                <option v-if="!hasDefaultCategory" value="default">default</option>
+                <option v-for="item in categories" :key="item.category" :value="item.category">
+                  {{ item.category }}
+                </option>
+              </select>
+            </div>
 
-          <div class="field">
-            <label>{{ $t("drawer.fieldDescription") }}</label>
-            <textarea v-model="description" rows="3" :placeholder="$t('drawer.fieldDescriptionPlaceholder')"></textarea>
-          </div>
+            <div class="field">
+              <label>{{ $t("drawer.fieldDescription") }}</label>
+              <textarea v-model="description" rows="3" :placeholder="$t('drawer.fieldDescriptionPlaceholder')"></textarea>
+            </div>
 
-          <div class="field">
-            <label>{{ $t("drawer.fieldTags") }}</label>
-            <input v-model="tags" :placeholder="$t('drawer.fieldTagsPlaceholder')" />
+            <div class="field">
+              <label>{{ $t("drawer.fieldTags") }}</label>
+              <input v-model="tags" :placeholder="$t('drawer.fieldTagsPlaceholder')" />
+            </div>
           </div>
 
           <div class="drawer-actions">
@@ -93,7 +95,7 @@
               </button>
             </div>
           </div>
-        </div>
+        </template>
       </aside>
     </div>
   </transition>

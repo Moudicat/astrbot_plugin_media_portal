@@ -78,11 +78,19 @@
       "audioLabel": "Audios",
       "categoryLabel": "Categories",
       "sizeLabel": "Disk usage"
+    },
+    "viewMode": {
+      "label": "View mode",
+      "card": "Card",
+      "list": "List",
+      "toCard": "Switch to card",
+      "toList": "Switch to list"
     }
   },
   "card": {
     "copyLink": "Copy link",
-    "detail": "Details"
+    "detail": "Details",
+    "preview": "Preview"
   },
   "drawer": {
     "title": "Media detail",
@@ -143,7 +151,11 @@
     "filenamePlaceholder": "e.g. cat.mp4",
     "submit": "Save",
     "skippedOversize": "Skipped {count} files larger than {mb}MB: {names}",
-    "remoteSaved": "Remote media saved"
+    "remoteSaved": "Remote media saved",
+    "globalDropTitle": "Drop to upload to current category",
+    "globalDropHint": "Files will be uploaded to \"{category}\"",
+    "dropQueued": "Queued {count} files → {category}",
+    "pasteQueued": "Queued {count} pasted files → {category}"
   },
   "uploadProgress": {
     "uploading": "Uploading · {count} · {progress}%",
@@ -283,6 +295,41 @@
     "pruneBusy": "Pruning...",
     "languageTitle": "Language",
     "languageHint": "Switch the display language",
+    "appearanceTitle": "Appearance",
+    "themeColor": "Theme color",
+    "themeColorHint": "Used for buttons, accents, and active states",
+    "gridDensity": "Grid density",
+    "gridDensityHint": "Adjust card size / spacing",
+    "density": {
+      "compact": "Compact",
+      "cozy": "Cozy",
+      "comfortable": "Comfortable"
+    },
+    "pageSize": "Items per page",
+    "pageSizeHint": "Adjust media library page size",
+    "backupTitle": "Backup / Restore",
+    "backupExport": "Export backup",
+    "backupExportHint": "Pack DB, categories, and media as tar.gz",
+    "backupExportFull": "Full (with media)",
+    "backupExportMeta": "Metadata only",
+    "backupExportDone": "Backup download started",
+    "backupExportFailed": "Backup failed",
+    "backupBusy": "Processing...",
+    "backupImport": "Restore from backup",
+    "backupImportHint": "Overwrites DB and categories; media can optionally be replaced",
+    "backupReplaceMedia": "Replace media dir",
+    "backupImportBtn": "Choose backup file",
+    "backupImportConfirm": "Import will overwrite current data. Continue?",
+    "backupImportDone": "Restored: {parts}",
+    "backupImportFailed": "Restore failed",
+    "settingsIo": "UI preferences",
+    "settingsIoHint": "Export / import current UI preferences",
+    "settingsExport": "Export settings",
+    "settingsImport": "Import settings",
+    "settingsExportDone": "Settings exported",
+    "settingsExportFailed": "Export failed",
+    "settingsImportDone": "Settings imported",
+    "settingsImportFailed": "Import failed",
     "stat": {
       "total": "Total",
       "totalDesc": "Overall count",

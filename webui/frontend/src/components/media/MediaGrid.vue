@@ -53,6 +53,15 @@
           </button>
         </div>
         <div class="toolbar-actions">
+          <button
+            class="icon view-mode-btn mobile-inline"
+            type="button"
+            :title="viewModeToggleLabel"
+            :aria-label="viewModeToggleLabel"
+            @click="ui.toggleGridMode()"
+          >
+            <Icon :name="ui.gridMode === 'card' ? 'list' : 'layout-grid'" :size="15" />
+          </button>
           <button class="accent" :title="$t('media.uploadTitle')" @click="$emit('open-upload')">
             <Icon name="upload" :size="15" />
             <span class="hide-mobile">{{ $t("media.uploadBtn") }}</span>
@@ -71,10 +80,16 @@
           <Icon :name="tab.icon" :size="13" />
           {{ tab.label }}
         </button>
-        <span v-if="activeCategory" class="chip active hide-mobile" style="margin-left: auto">
-          <Icon name="folder" :size="13" />
-          {{ activeCategory }}
-        </span>
+        <button
+          class="chip view-mode-btn pc-only"
+          type="button"
+          style="margin-left: auto"
+          :title="viewModeToggleLabel"
+          :aria-label="viewModeToggleLabel"
+          @click="ui.toggleGridMode()"
+        >
+          <Icon :name="ui.gridMode === 'card' ? 'list' : 'layout-grid'" :size="14" />
+        </button>
       </div>
 
       <div v-if="categories.length" class="category-tabs mobile-only">
@@ -203,7 +218,9 @@ import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import MediaCard from "./MediaCard.vue";
 import type { CategoryItem, MediaItem, MediaStats } from "@/api/types";
-import type { StatVisibility } from "@/stores/ui";
+import { useUiStore, type StatVisibility } from "@/stores/ui";
+
+const ui = useUiStore();
 
 interface Props {
   items: MediaItem[];
@@ -365,6 +382,10 @@ const visibleStatCards = computed(() => {
   const vis = props.statVisibility || {};
   return statCards.value.filter((card) => (vis as any)[card.key] !== false);
 });
+
+const viewModeToggleLabel = computed(() =>
+  ui.gridMode === "card" ? t("media.viewMode.toList") : t("media.viewMode.toCard"),
+);
 
 const kindTabs = computed(() => [
   { id: "", label: t("media.kind.all"), icon: "layers" },
