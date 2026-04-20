@@ -57,7 +57,7 @@ html[data-theme="dark"] {
   --shadow-md: 0 12px 32px rgba(2, 6, 23, 0.45);
   --shadow-lg: 0 24px 56px rgba(2, 6, 23, 0.55);
   --glow-primary: 0 0 0 1px rgba(99, 102, 241, 0.35), 0 12px 30px rgba(99, 102, 241, 0.25);
-  --blur: saturate(160%) blur(18px);
+  --blur: saturate(150%) blur(10px);
   --checker: linear-gradient(45deg, rgba(148, 163, 184, 0.08) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.08) 75%) 0 0 / 16px 16px,
     linear-gradient(45deg, rgba(148, 163, 184, 0.08) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.08) 75%) 8px 8px / 16px 16px;
 }
@@ -92,7 +92,7 @@ html[data-theme="light"] {
   --shadow-md: 0 12px 28px rgba(15, 23, 42, 0.1);
   --shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.14);
   --glow-primary: 0 0 0 1px rgba(99, 102, 241, 0.25), 0 10px 28px rgba(99, 102, 241, 0.2);
-  --blur: saturate(180%) blur(18px);
+  --blur: saturate(170%) blur(10px);
   --checker: linear-gradient(45deg, rgba(15, 23, 42, 0.06) 25%, transparent 25%, transparent 75%, rgba(15, 23, 42, 0.06) 75%) 0 0 / 16px 16px,
     linear-gradient(45deg, rgba(15, 23, 42, 0.06) 25%, transparent 25%, transparent 75%, rgba(15, 23, 42, 0.06) 75%) 8px 8px / 16px 16px;
 }
@@ -183,45 +183,32 @@ body::before {
 
 .app-backdrop .blob {
   position: absolute;
-  width: 520px;
-  height: 520px;
+  width: 720px;
+  height: 720px;
   border-radius: 50%;
-  filter: blur(110px);
-  opacity: 0.55;
-  animation: drift 24s ease-in-out infinite alternate;
+  opacity: 0.45;
 }
 
 .app-backdrop .blob-a {
-  background: radial-gradient(circle, #6366f1 0%, transparent 70%);
-  top: -180px;
-  left: -120px;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.55) 0%, transparent 62%);
+  top: -260px;
+  left: -200px;
 }
 
 .app-backdrop .blob-b {
-  background: radial-gradient(circle, #22c55e 0%, transparent 70%);
-  bottom: -200px;
-  right: -120px;
-  animation-delay: -8s;
+  background: radial-gradient(circle, rgba(34, 197, 94, 0.5) 0%, transparent 62%);
+  bottom: -280px;
+  right: -200px;
 }
 
 .app-backdrop .blob-c {
-  background: radial-gradient(circle, #a855f7 0%, transparent 70%);
-  bottom: 30%;
-  left: 45%;
-  animation-delay: -14s;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.5) 0%, transparent 62%);
+  bottom: 20%;
+  left: 40%;
 }
 
 html[data-theme="light"] .app-backdrop .blob {
-  opacity: 0.35;
-}
-
-@keyframes drift {
-  0% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  100% {
-    transform: translate3d(60px, 40px, 0) scale(1.1);
-  }
+  opacity: 0.3;
 }
 
 ::-webkit-scrollbar {
@@ -313,8 +300,6 @@ button:not(.plain) {
   white-space: nowrap;
   transition: border-color var(--transition-fast), background var(--transition-fast),
     color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
 }
 
 .btn:hover,
@@ -738,17 +723,6 @@ button.block {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.2);
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 
 .topbar-selection {
@@ -817,12 +791,10 @@ button.block {
 .login-card {
   width: min(440px, 100%);
   padding: 36px 32px 30px;
-  background: var(--surface-0);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -1116,11 +1088,9 @@ button.block {
  * ========================================================== */
 
 .panel {
-  background: var(--surface-0);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
   padding: 16px;
   box-shadow: var(--shadow-sm);
 }
@@ -1421,13 +1391,6 @@ button.block {
   place-items: center;
   color: #fff;
   box-shadow: var(--shadow-sm);
-  animation: spin 12s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .preview-overlay {
@@ -1446,11 +1409,9 @@ button.block {
   gap: 4px;
   padding: 3px 8px;
   border-radius: var(--radius-pill);
-  background: rgba(2, 6, 23, 0.55);
+  background: rgba(2, 6, 23, 0.7);
   color: #fff;
   font-size: 11px;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
 }
 
 .preview-actions {
@@ -1473,11 +1434,9 @@ button.block {
   width: 30px;
   padding: 0;
   justify-content: center;
-  background: rgba(2, 6, 23, 0.55);
+  background: rgba(2, 6, 23, 0.7);
   color: #fff;
   border-color: transparent;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
 }
 
 .preview-actions button:hover {
@@ -1558,8 +1517,7 @@ button.block {
 .drawer-mask {
   position: fixed;
   inset: 0;
-  background: rgba(2, 6, 23, 0.42);
-  backdrop-filter: blur(6px);
+  background: rgba(2, 6, 23, 0.55);
   z-index: var(--z-drawer);
   display: flex;
   justify-content: flex-end;
@@ -1700,8 +1658,7 @@ button.block {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(2, 6, 23, 0.55);
-  backdrop-filter: blur(8px);
+  background: rgba(2, 6, 23, 0.68);
   display: grid;
   place-items: center;
   padding: 16px;
@@ -1736,9 +1693,7 @@ button.block {
 
 /* ---- Confirm dialog ---- */
 .confirm-mask {
-  background: rgba(2, 6, 23, 0.6);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(2, 6, 23, 0.72);
 }
 
 .confirm-modal {
@@ -1975,8 +1930,7 @@ button.block {
 .player-mask {
   position: fixed;
   inset: 0;
-  background: rgba(2, 6, 23, 0.82);
-  backdrop-filter: blur(10px);
+  background: rgba(2, 6, 23, 0.92);
   display: flex;
   flex-direction: column;
   z-index: var(--z-overlay);
@@ -2049,11 +2003,9 @@ button.player-nav,
   min-height: 46px;
   padding: 0;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.18);
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2306,20 +2258,23 @@ button.player-nav:disabled,
   overflow: hidden;
 }
 
+/* Shimmer 用 transform:translateX 驱动伪元素，属于合成层动画，
+   不触发 paint/layout，极大降低 GPU/Compositor 成本。 */
+.skeleton-card .sk-media,
+.skeleton-card .sk-line {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
 .skeleton-card .sk-media {
   aspect-ratio: 4 / 3;
-  background: linear-gradient(90deg, var(--surface-2), var(--surface-1), var(--surface-2));
-  background-size: 200% 100%;
-  animation: shimmer 1.4s ease-in-out infinite;
 }
 
 .skeleton-card .sk-line {
   height: 10px;
   margin: 10px 12px;
   border-radius: 6px;
-  background: linear-gradient(90deg, var(--surface-2), var(--surface-1), var(--surface-2));
-  background-size: 200% 100%;
-  animation: shimmer 1.6s ease-in-out infinite;
 }
 
 .skeleton-card .sk-line.short {
@@ -2327,12 +2282,40 @@ button.player-nav:disabled,
   margin-top: 0;
 }
 
+.skeleton-card .sk-media::after,
+.skeleton-card .sk-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: shimmer 1.4s linear infinite;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.skeleton-card .sk-line::after {
+  animation-duration: 1.6s;
+}
+
+html[data-theme="light"] .skeleton-card .sk-media::after,
+html[data-theme="light"] .skeleton-card .sk-line::after {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(15, 23, 42, 0.06) 50%,
+    transparent 100%
+  );
+}
+
 @keyframes shimmer {
-  0% {
-    background-position: 100% 0;
-  }
-  100% {
-    background-position: -100% 0;
+  to {
+    transform: translateX(100%);
   }
 }
 
@@ -2389,8 +2372,6 @@ button.player-nav:disabled,
   gap: 10px;
   align-items: flex-start;
   animation: slide-up var(--transition-slow);
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
 }
 
 .toast .avatar {
@@ -2548,8 +2529,6 @@ button.player-nav:disabled,
   box-shadow: var(--shadow-lg);
   z-index: var(--z-dock);
   overflow: hidden;
-  backdrop-filter: var(--blur);
-  -webkit-backdrop-filter: var(--blur);
   animation: slide-up var(--transition-slow);
   transition: border-color var(--transition-base), box-shadow var(--transition-base);
 }
@@ -2647,6 +2626,7 @@ button.player-nav:disabled,
   border-radius: var(--radius-sm);
   background: var(--surface-1);
   border: 1px solid var(--border);
+  min-width: 0;
 }
 
 .upload-progress-item.done {
@@ -2664,6 +2644,15 @@ button.player-nav:disabled,
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+}
+
+.upload-progress-item-head > button {
+  flex: none;
+  width: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
 }
 
 .upload-progress-item-icon {
@@ -2702,6 +2691,8 @@ button.player-nav:disabled,
 .upload-progress-size {
   font-size: 11px;
   color: var(--text-muted);
+  flex: none;
+  white-space: nowrap;
 }
 
 .upload-progress-status {
@@ -2963,13 +2954,12 @@ button.player-nav:disabled,
 /* Fullscreen preview uses the same transition name, so handle it explicitly. */
 .modal-enter-active.player-mask,
 .modal-leave-active.player-mask {
-  transition: opacity var(--transition-base), backdrop-filter var(--transition-base);
+  transition: opacity var(--transition-base);
 }
 
 .modal-enter-from.player-mask,
 .modal-leave-to.player-mask {
   opacity: 0;
-  backdrop-filter: blur(0);
 }
 
 .modal-enter-active.player-mask .player-topbar,
@@ -3110,8 +3100,7 @@ button.player-nav:disabled,
   .sidebar-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.35);
-    backdrop-filter: blur(2px);
+    background: rgba(0, 0, 0, 0.45);
     z-index: calc(var(--z-sidebar) - 1);
     animation: fade-in 0.2s ease;
   }
@@ -3638,9 +3627,5 @@ button.player-nav:disabled,
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
-  }
-
-  .app-backdrop .blob {
-    animation: none !important;
   }
 }
