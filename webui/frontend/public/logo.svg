@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+    <linearGradient id="fgCard" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#D946EF" />
+    </linearGradient>
+    <linearGradient id="mediaCircle" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22D3EE" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+    <linearGradient id="astrStar" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047" />
+      <stop offset="100%" stop-color="#F59E0B" />
+    </linearGradient>
+  </defs>
+
+  <rect x="55" y="170" width="260" height="260" rx="48" fill="url(#bgCard)" opacity="0.9" />
+
+  <circle cx="90" cy="205" r="7" fill="#FFFFFF" opacity="0.5" />
+  <circle cx="115" cy="205" r="7" fill="#FFFFFF" opacity="0.5" />
+  <circle cx="140" cy="205" r="7" fill="#FFFFFF" opacity="0.5" />
+
+  <rect x="155" y="110" width="260" height="260" rx="48" fill="url(#fgCard)" opacity="0.85" />
+
+  <circle cx="285" cy="240" r="70" fill="url(#mediaCircle)" />
+
+  <path d="M 270,214 L 315,240 L 270,266 Z"
+        fill="#FFFFFF" stroke="#FFFFFF" stroke-width="8" stroke-linejoin="round" />
+
+  <path d="M 415,70 Q 415,120 465,120 Q 415,120 415,170 Q 415,120 365,120 Q 415,120 415,70 Z"
+        fill="url(#astrStar)" />
+
+  <circle cx="415" cy="120" r="8" fill="#FFFFFF" opacity="0.6" />
+</svg>

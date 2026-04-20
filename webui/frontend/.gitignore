@@ -1,0 +1,15 @@
+node_modules/
+.vite/
+dist/
+stats.html
+*.log
+.DS_Store
+
+# 统一使用 Bun，避免混用造成锁文件冲突
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.npmrc
+.yarnrc
+.yarnrc.yml
+.pnpm-store/

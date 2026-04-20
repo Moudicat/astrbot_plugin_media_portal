@@ -732,43 +732,17 @@ class WebUIServer:
                         del response.headers["Expires"]
                 return response
 
-        # 关键入口静态资源：版本指纹随这些文件的 mtime 变化，
-        # 避免浏览器 / 反代 / CDN 锁住旧版本。
-        asset_version_sources = [
-            index_file,
-            static_root / "styles.css",
-            static_root / "app.js",
-        ]
-
-        def _compute_asset_version() -> str:
-            parts: list[str] = []
-            for item in asset_version_sources:
-                try:
-                    parts.append(str(item.stat().st_mtime_ns))
-                except OSError:
-                    parts.append("0")
-            digest = hashlib.md5("-".join(parts).encode("utf-8")).hexdigest()
-            return digest[:10]
-
         @self._app.get("/", response_class=HTMLResponse)
         async def index_page() -> HTMLResponse:
+            # 产物由 Vite 构建生成，文件名自带 hash 指纹，无需再做 URL 重写。
             if not index_file.exists():
-                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="前端文件不存在")
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND,
+                    detail="前端文件不存在，请先在 webui/frontend 下执行 `bun install && bun run build`",
+                )
             html = index_file.read_text(encoding="utf-8")
-            version = _compute_asset_version()
-            # 给入口 CSS / JS 追加版本指纹，绕过各级缓存。
-            html = html.replace(
-                'href="/static/styles.css"',
-                f'href="/static/styles.css?v={version}"',
-                1,
-            )
-            html = html.replace(
-                'src="/static/app.js"',
-                f'src="/static/app.js?v={version}"',
-                1,
-            )
             response = HTMLResponse(html)
-            # index.html 本身永不缓存，保证每次都能拿到最新的版本号。
+            # index.html 本身永不缓存，保证每次都能拿到最新的 hash 指纹文件。
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
