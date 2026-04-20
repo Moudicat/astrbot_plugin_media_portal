@@ -65,10 +65,6 @@
           <span>{{ item.category }}</span>
           <span class="dot"></span>
           <span class="mono">{{ sizeLabel }}</span>
-          <template v-if="durationLabel">
-            <span class="dot"></span>
-            <span class="mono">{{ durationLabel }}</span>
-          </template>
           <template v-if="dateLabel">
             <span class="dot"></span>
             <span class="mono">{{ dateLabel }}</span>
