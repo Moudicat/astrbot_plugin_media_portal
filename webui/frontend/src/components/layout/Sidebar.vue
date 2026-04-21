@@ -25,6 +25,14 @@
       <div class="sidebar-header">
         <h3>{{ $t("sidebar.categoryTotal", { count: categories.length }) }}</h3>
         <div class="sidebar-tools">
+          <button
+            class="icon sm"
+            :class="{ 'tool-active': activeRoute === 'trash' }"
+            :title="$t('settings.openTrash')"
+            @click="$emit('open-trash')"
+          >
+            <Icon name="trash-2" :size="14" />
+          </button>
           <button class="icon sm" :title="$t('sidebar.addCategoryTitle')" @click="$emit('request-create-category')">
             <Icon name="folder-plus" :size="14" />
           </button>
@@ -33,7 +41,7 @@
       <ul class="category-list">
         <li
           class="category-item"
-          :class="{ active: activeCategory === '' }"
+          :class="{ active: activeRoute === 'media' && activeCategory === '' }"
           @click="$emit('select-category', '')"
           @contextmenu.prevent="onContext($event, { category: '', isAll: true, count: totalCount })"
         >
@@ -45,7 +53,7 @@
           v-for="item in categories"
           :key="item.category"
           class="category-item"
-          :class="{ active: activeCategory === item.category }"
+          :class="{ active: activeRoute === 'media' && activeCategory === item.category }"
           :title="item.description || item.category"
           @click="$emit('select-category', item.category)"
           @contextmenu.prevent="onContext($event, item)"
@@ -75,6 +83,7 @@ import type { CategoryItem } from "@/api/types";
 interface Props {
   categories: CategoryItem[];
   activeCategory?: string;
+  activeRoute?: string;
   viewMode?: string;
   totalCount?: number;
   canDataBrowse?: boolean;
@@ -82,6 +91,7 @@ interface Props {
 
 withDefaults(defineProps<Props>(), {
   activeCategory: "",
+  activeRoute: "",
   viewMode: "media",
   totalCount: 0,
   canDataBrowse: true,
@@ -90,6 +100,7 @@ withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: "switch-mode", mode: string): void;
   (e: "select-category", category: string): void;
+  (e: "open-trash"): void;
   (e: "request-create-category"): void;
   (e: "context-category", payload: { event: MouseEvent; item: any }): void;
   (e: "close"): void;
@@ -97,15 +108,50 @@ const emit = defineEmits<{
 
 function categoryIcon(name: string): string {
   const lower = String(name || "").toLowerCase();
-  if (lower.includes("image") || lower.includes("图")) return "image";
-  if (lower.includes("video") || lower.includes("视频") || lower.includes("短视频")) return "film";
-  if (lower.includes("audio") || lower.includes("音乐") || lower.includes("音频")) return "music";
-  if (lower.includes("doc") || lower.includes("文档")) return "file-text";
-  if (lower.includes("meme") || lower.includes("表情")) return "sticker";
+  const imageWords = ["image", "img", "图片", "图像", "图", "画像", "写真"];
+  const videoWords = [
+    "video",
+    "视频",
+    "短视频",
+    "影片",
+    "映像",
+    "動画",
+    "ビデオ",
+  ];
+  const audioWords = [
+    "audio",
+    "music",
+    "音乐",
+    "音频",
+    "音声",
+    "オーディオ",
+  ];
+  const docWords = ["doc", "document", "text", "文档", "資料", "ドキュメント"];
+  const memeWords = ["meme", "sticker", "emoji", "表情", "贴纸", "スタンプ"];
+  if (containsAny(lower, imageWords)) return "image";
+  if (containsAny(lower, videoWords)) return "film";
+  if (containsAny(lower, audioWords)) return "music";
+  if (containsAny(lower, docWords)) return "file-text";
+  if (containsAny(lower, memeWords)) return "sticker";
   return "folder";
+}
+
+function containsAny(text: string, words: string[]): boolean {
+  return words.some((word) => {
+    const key = String(word || "").toLowerCase().trim();
+    return !!key && text.includes(key);
+  });
 }
 
 function onContext(event: MouseEvent, item: any) {
   emit("context-category", { event, item });
 }
 </script>
+
+<style scoped>
+.sidebar-tools .tool-active {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--line));
+  background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+}
+</style>

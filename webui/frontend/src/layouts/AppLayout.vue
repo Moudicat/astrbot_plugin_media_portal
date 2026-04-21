@@ -36,12 +36,14 @@
       <div class="sidebar-wrap" :class="{ open: ui.sidebarOpen }">
         <Sidebar
           :categories="category.items"
-          :active-category="media.filters.category"
+          :active-category="route.name === 'media' ? media.filters.category : ''"
+          :active-route="String(route.name || '')"
           :view-mode="viewMode"
           :total-count="media.stats.total_count || 0"
           :can-data-browse="config.canDataBrowse"
           @switch-mode="switchMode"
           @select-category="selectCategory"
+          @open-trash="openTrashView"
           @request-create-category="categoryCreateVisible = true"
           @context-category="onContextCategory"
         />
@@ -126,9 +128,13 @@
     <SettingsDialog
       :visible="settingsVisible"
       :stat-visibility="ui.statVisibility"
+      :trash-retention-days="config.trashRetentionDays"
       @close="settingsVisible = false"
       @prune-categories="pruneCategories"
       @update-stat-visibility="ui.updateStatVisibility"
+      @open-duplicates="openDuplicatesView"
+      @update-trash-retention="updateTrashRetention"
+      @purge-trash-expired="purgeExpiredTrash"
     />
 
     <UploadProgress
@@ -143,7 +149,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, provide, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
@@ -170,6 +176,7 @@ import { useToastStore } from "@/stores/toast";
 import { useConfirmStore } from "@/stores/confirm";
 import { buildDataFileUrl } from "@/api/data";
 import { mediaApi } from "@/api/media";
+import { ApiError } from "@/api/client";
 import { buildMediaDirectUrl, shareAbsoluteUrl } from "@/utils/url";
 import { copyText } from "@/utils/clipboard";
 import type { CategoryItem, ContextMenuEntry, MediaItem } from "@/api/types";
@@ -206,6 +213,36 @@ const settingsVisible = ref(false);
 
 const viewMode = computed(() => (route.name === "data" ? "data" : "media"));
 
+function routeCategoryValue(raw: unknown): string {
+  if (Array.isArray(raw)) return String(raw[0] || "");
+  return typeof raw === "string" ? raw : "";
+}
+
+function buildMediaRouteQuery(categoryValue: string): Record<string, string> {
+  const normalized = String(categoryValue || "").trim();
+  return normalized ? { category: normalized } : {};
+}
+
+function syncMediaFilterFromRoute() {
+  if (route.name !== "media") return;
+  const categoryFromRoute = routeCategoryValue(route.query.category);
+  if (media.filters.category !== categoryFromRoute) {
+    media.selectCategory(categoryFromRoute);
+  }
+}
+
+async function syncMediaCategoryToRoute(categoryValue: string) {
+  if (route.name !== "media") return;
+  const current = routeCategoryValue(route.query.category);
+  const normalized = String(categoryValue || "").trim();
+  if (current === normalized) return;
+  try {
+    await router.replace({ name: "media", query: buildMediaRouteQuery(normalized) });
+  } catch (_error) {
+    // ignore duplicated navigation
+  }
+}
+
 const globalDragging = ref(false);
 let dragDepth = 0;
 let dragHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -225,6 +262,15 @@ upload.setRefreshHandler(() => {
   media.fetchStats();
 });
 upload.setErrorHandler((text) => toast.push(text, "error"));
+
+watch(
+  () => [route.name, route.query.category],
+  () => {
+    if (route.name !== "media") return;
+    syncMediaFilterFromRoute();
+    media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
+  },
+);
 
 onMounted(async () => {
   ui.applyTheme();
@@ -246,6 +292,7 @@ onBeforeUnmount(() => {
 
 async function bootstrap() {
   await config.fetch();
+  syncMediaFilterFromRoute();
   await Promise.all([category.fetch(), media.fetchStats(), media.fetchList()]);
   if (viewMode.value === "data" && config.canDataBrowse) {
     await dataBrowser.fetchTree("");
@@ -277,15 +324,65 @@ function switchMode(mode: string) {
       toast.push((error as Error).message, "error"),
     );
   } else {
-    router.push({ name: "media" });
+    router.push({
+      name: "media",
+      query: buildMediaRouteQuery(media.filters.category || ""),
+    });
     media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
   }
 }
 
-function selectCategory(cat: string) {
-  media.selectCategory(cat);
-  media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
+function openTrashView() {
+  settingsVisible.value = false;
   ui.setSidebarOpen(false);
+  router.push({ name: "trash" });
+}
+
+function openDuplicatesView() {
+  settingsVisible.value = false;
+  ui.setSidebarOpen(false);
+  router.push({ name: "duplicates" });
+}
+
+async function updateTrashRetention(days: number) {
+  try {
+    await mediaApi.setTrashSettings(days);
+    await config.fetch();
+    toast.push(t("settings.trashRetentionSaved"), "success");
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  }
+}
+
+async function purgeExpiredTrash() {
+  const ok = await confirm.confirm({
+    title: t("settings.trashPurgeTitle"),
+    message: t("settings.trashPurgeConfirm"),
+    confirmText: t("settings.trashPurgeNow"),
+    tone: "warning",
+    icon: "trash-2",
+  });
+  if (!ok) return;
+  try {
+    const result = await mediaApi.purgeExpiredTrash();
+    toast.push(t("settings.trashPurgedDone", { count: result.purged || 0 }), "success");
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  }
+}
+
+async function selectCategory(cat: string) {
+  ui.setSidebarOpen(false);
+  const normalized = String(cat || "").trim();
+  if (route.name !== "media") {
+    try {
+      await router.push({ name: "media", query: buildMediaRouteQuery(normalized) });
+    } catch (_error) {
+      // ignore duplicated navigation
+    }
+    return;
+  }
+  await syncMediaCategoryToRoute(normalized);
 }
 
 async function openDetail(item: MediaItem) {
@@ -629,10 +726,37 @@ async function onSaveUrl(payload: {
   filename: string;
 }) {
   try {
-    await mediaApi.saveUrl(payload);
+    await mediaApi.saveUrl({ ...payload, duplicate_policy: "error" });
     toast.push(t("upload.remoteSaved"), "success");
     await Promise.all([media.fetchList(), category.fetch(), media.fetchStats()]);
   } catch (error) {
+    const apiError = error as ApiError;
+    const detail = (apiError && apiError.detail) || null;
+    const code = detail && typeof detail === "object" ? (detail as any).code : "";
+    if (apiError.status === 409 && code === "duplicate_sha256") {
+      const existing = (detail as any).existing || {};
+      const ok = await confirm.confirm({
+        title: t("upload.duplicateTitle"),
+        message: t("upload.duplicateMessage", { name: existing.filename || payload.filename || "-" }),
+        detail: t("upload.duplicateDetail"),
+        confirmText: t("upload.duplicateContinue"),
+        cancelText: t("upload.duplicateCancel"),
+        tone: "warning",
+        icon: "alert-triangle",
+      });
+      if (!ok) {
+        toast.push(t("upload.duplicateCancelled"), "info");
+        return;
+      }
+      try {
+        await mediaApi.saveUrl({ ...payload, duplicate_policy: "force" });
+        toast.push(t("upload.remoteSaved"), "success");
+        await Promise.all([media.fetchList(), category.fetch(), media.fetchStats()]);
+      } catch (innerError) {
+        toast.push((innerError as Error).message, "error");
+      }
+      return;
+    }
     toast.push((error as Error).message, "error");
   }
 }
@@ -669,7 +793,8 @@ async function onRenameCategory(payload: {
     const result = await category.update(payload.oldName, body);
     const finalName = (result && result.category) || payload.newName;
     if (media.filters.category === payload.oldName) {
-      media.filters.category = finalName;
+      media.selectCategory(finalName);
+      await syncMediaCategoryToRoute(finalName);
     }
     if (payload.newName !== payload.oldName) {
       toast.push(t("categoryRename.renamedOk", { name: finalName }), "success");
@@ -748,7 +873,8 @@ async function pruneCategories() {
         "success",
       );
       if (media.filters.category && (result.removed || []).includes(media.filters.category)) {
-        media.filters.category = "";
+        media.selectCategory("");
+        await syncMediaCategoryToRoute("");
       }
     } else {
       toast.push(t("categoryAction.pruneNone"), "info");
@@ -823,7 +949,10 @@ async function confirmDeleteCategory(item: CategoryItem) {
   try {
     const result = await category.remove(item.category, true);
     const removedRows = result?.deleted_rows || 0;
-    if (media.filters.category === item.category) media.filters.category = "";
+    if (media.filters.category === item.category) {
+      media.selectCategory("");
+      await syncMediaCategoryToRoute("");
+    }
     toast.push(
       removedRows > 0
         ? t("categoryAction.deletedWithCount", { name: item.category, count: removedRows })
@@ -840,7 +969,6 @@ function openMediaContext({ event, item }: { event: MouseEvent; item: MediaItem 
   if (!item) return;
   const items: ContextMenuEntry[] = [
     { key: "copy-link", icon: "link-2", label: t("mediaAction.ctxCopyLink"), tone: "primary" },
-    { key: "save", icon: "download", label: t("mediaAction.ctxSave"), tone: "accent" },
     { key: "open", icon: "external-link", label: t("mediaAction.ctxOpen") },
     { divider: true, key: `d_${item.id || ""}` },
     { key: "delete", icon: "trash-2", label: t("mediaAction.ctxDelete"), tone: "danger" },
@@ -860,9 +988,6 @@ async function handleMediaContextAction(key: string, item: MediaItem) {
     case "copy-link":
       await copyMediaLink(item.id);
       break;
-    case "save":
-      await downloadMedia(item);
-      break;
     case "open":
       openMediaInNewTab(item);
       break;
@@ -871,29 +996,6 @@ async function handleMediaContextAction(key: string, item: MediaItem) {
       break;
     default:
       break;
-  }
-}
-
-async function downloadMedia(item: MediaItem) {
-  try {
-    let url = "";
-    try {
-      const detail = await media.detail(item.id);
-      url = detail?.public_url || buildMediaDirectUrl(item.category, item.filename, auth.readonlyToken);
-    } catch (_e) {
-      url = buildMediaDirectUrl(item.category, item.filename, auth.readonlyToken);
-    }
-    if (!url) throw new Error(t("mediaAction.linkGetEmpty"));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = item.filename || "";
-    link.rel = "noopener";
-    link.target = "_blank";
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  } catch (error) {
-    toast.push((error as Error).message || t("mediaAction.downloadFailed"), "error");
   }
 }
 

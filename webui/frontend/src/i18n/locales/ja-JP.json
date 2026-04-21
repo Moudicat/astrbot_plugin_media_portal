@@ -62,6 +62,9 @@
     "emptyTitle": "メディアがありません",
     "emptyHint": "ファイルをアップロードするか、URL 保存を試してみましょう。",
     "emptyAction": "アップロード / URL 保存",
+    "emptyNoResultsTitle": "該当するメディアが見つかりません",
+    "emptyNoResultsHint": "キーワードを変更するか、フィルターを解除してください。",
+    "emptyNoResultsReset": "フィルターをクリア",
     "pagerText": "{page} / {total} ページ · 全 {count} 件",
     "refreshed": "データを更新しました",
     "kind": {
@@ -97,10 +100,16 @@
     "close": "閉じる",
     "emptyTitle": "選択されていません",
     "emptyHint": "一覧から項目をクリックして詳細を表示します。",
+    "metadataTitle": "メタデータ",
     "id": "ID",
     "kind": "種類",
     "size": "サイズ",
+    "mime": "MIME",
+    "duration": "長さ",
+    "category": "カテゴリ",
     "created": "作成",
+    "updated": "更新",
+    "zoomIn": "原寸で表示",
     "fieldFilename": "ファイル名",
     "fieldFilenamePlaceholder": "ファイル名",
     "fieldFilenameWarn": "名前変更後、既存の直リンク/共有リンクは無効になります（ディスク上のファイルもリネームされます）。",
@@ -113,7 +122,7 @@
     "saved": "メディア情報を更新しました",
     "copy": "リンクをコピー",
     "open": "開く",
-    "delete": "削除"
+    "delete": "ゴミ箱へ移動"
   },
   "player": {
     "copyLink": "リンクをコピー",
@@ -129,7 +138,15 @@
     "aria": "音声プレーヤー",
     "expand": "プレーヤーを展開",
     "minimize": "最小化",
-    "close": "閉じる"
+    "close": "閉じる",
+    "play": "再生",
+    "pause": "一時停止",
+    "seekBack": "10秒戻る",
+    "seekForward": "10秒進む",
+    "mute": "ミュート",
+    "unmute": "ミュート解除",
+    "volume": "音量",
+    "speed": "速度"
   },
   "upload": {
     "title": "メディアを保存",
@@ -155,7 +172,13 @@
     "globalDropTitle": "ドロップで現在のカテゴリにアップロード",
     "globalDropHint": "ファイルは「{category}」にアップロードされます",
     "dropQueued": "{count} 件をキューに追加 → {category}",
-    "pasteQueued": "クリップボードの {count} 件をキューに追加 → {category}"
+    "pasteQueued": "クリップボードの {count} 件をキューに追加 → {category}",
+    "duplicateTitle": "重複ファイルを検出",
+    "duplicateMessage": "同じ SHA256 の既存ファイルがあります：{name}",
+    "duplicateDetail": "続行すると内容が同一のコピーを保存します。キャンセルでこのアップロードを中止します。",
+    "duplicateContinue": "アップロードを続行",
+    "duplicateCancel": "アップロードを中止",
+    "duplicateCancelled": "重複ファイルのアップロードを中止しました"
   },
   "uploadProgress": {
     "uploading": "アップロード中 · {count} · {progress}%",
@@ -235,16 +258,16 @@
     "pruneNone": "削除対象の空カテゴリはありません"
   },
   "mediaAction": {
-    "deleteTitle": "メディアを削除",
-    "deleteConfirm": "このメディアを削除しますか？",
-    "deleteDetail": "削除後、ディスクから物理ファイルが削除され復元できません。",
-    "deleteBtn": "削除",
-    "deleted": "メディアを削除しました",
-    "batchDeleteTitle": "一括削除",
-    "batchDeleteConfirm": "選択した {count} 件のメディアを削除しますか？",
-    "batchDeleteDetail": "選択ファイルは順次 DB とディスクから削除されます。元に戻せません。",
-    "batchDeleteBtn": "{count} 件削除",
-    "batchDeleteDone": "一括削除完了：成功 {ok} / {total}",
+    "deleteTitle": "ゴミ箱へ移動",
+    "deleteConfirm": "このメディアをゴミ箱へ移動しますか？",
+    "deleteDetail": "ファイルは保持期間内であればゴミ箱から復元できます。",
+    "deleteBtn": "ゴミ箱へ移動",
+    "deleted": "メディアをゴミ箱へ移動しました",
+    "batchDeleteTitle": "一括でゴミ箱へ移動",
+    "batchDeleteConfirm": "選択した {count} 件をゴミ箱へ移動しますか？",
+    "batchDeleteDetail": "選択ファイルは順次ゴミ箱へ移動され、期限内は復元できます。",
+    "batchDeleteBtn": "{count} 件を移動",
+    "batchDeleteDone": "一括処理完了：成功 {ok} / {total}",
     "linkCopied": "リンクをクリップボードにコピーしました",
     "linkEmpty": "コピー可能なリンクが返されませんでした",
     "urlEmpty": "リンクが空です",
@@ -256,7 +279,7 @@
     "ctxCopyLink": "リンクをコピー",
     "ctxSave": "保存",
     "ctxOpen": "開く",
-    "ctxDelete": "削除"
+    "ctxDelete": "ゴミ箱へ移動"
   },
   "dataBrowser": {
     "parent": "上へ",
@@ -330,6 +353,18 @@
     "settingsExportFailed": "出力失敗",
     "settingsImportDone": "設定を取り込みました",
     "settingsImportFailed": "取り込み失敗",
+    "trashTitle": "ゴミ箱 / 重複チェック",
+    "trashRetentionLabel": "ゴミ箱の保持日数",
+    "trashRetentionHint": "この日数を超えた項目は自動で完全削除されます",
+    "trashRetentionSaved": "保持日数を更新しました",
+    "trashPurgeTitle": "期限切れゴミ箱を削除",
+    "trashPurgeConfirm": "期限切れのゴミ箱項目を完全削除します。続行しますか？",
+    "trashPurgeNow": "期限切れを今すぐ削除",
+    "trashPurgedDone": "{count} 件の期限切れ項目を削除しました",
+    "duplicatesTitle": "重複確認ビュー",
+    "duplicatesHint": "精確重複（SHA）ビューを開いて整理できます",
+    "openTrash": "ゴミ箱を開く",
+    "openDuplicates": "重複ビューを開く",
     "stat": {
       "total": "メディア総数",
       "totalDesc": "上部の主要指標",
@@ -344,6 +379,40 @@
       "size": "使用容量",
       "sizeDesc": "全体サイズ"
     }
+  },
+  "trash": {
+    "searchPlaceholder": "ファイル名 / 説明 / SHA で検索",
+    "searchBtn": "検索",
+    "refresh": "更新",
+    "emptyTitle": "ゴミ箱は空です",
+    "emptyHint": "削除したメディアはここで復元または完全削除できます。",
+    "deletedAt": "削除日時 {time}",
+    "remainingDays": "自動削除まで {days} 日",
+    "restore": "復元",
+    "purge": "完全削除",
+    "pagerText": "{page} / {total} ページ · 全 {count} 件",
+    "restoreTitle": "メディアを復元",
+    "restoreConfirm": "「{name}」を復元しますか？",
+    "restoreDone": "{name} を復元しました",
+    "purgeTitle": "完全削除",
+    "purgeConfirm": "「{name}」を完全削除しますか？",
+    "purgeDetail": "この操作は元に戻せません。",
+    "purgeDone": "{name} を完全削除しました"
+  },
+  "duplicates": {
+    "modeSuspect": "疑似重複",
+    "modeExact": "精確重複（SHA）",
+    "emptyTitle": "重複は見つかりませんでした",
+    "emptyHint": "このモードでは重複候補がありません。",
+    "groupExact": "精確重複グループ · {count} 件",
+    "groupSuspect": "疑似重複グループ · {count} 件",
+    "preview": "プレビュー",
+    "detail": "詳細",
+    "delete": "ゴミ箱へ移動",
+    "deleteTitle": "重複項目を処理",
+    "deleteConfirm": "このファイルをゴミ箱へ移動しますか？",
+    "deleteDone": "ゴミ箱へ移動しました",
+    "pagerText": "{page} / {total} ページ · 全 {count} グループ"
   },
   "confirm": {
     "defaultTitle": "ご確認ください",

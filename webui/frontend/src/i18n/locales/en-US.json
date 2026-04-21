@@ -62,6 +62,9 @@
     "emptyTitle": "No media yet",
     "emptyHint": "Try uploading a file or saving a remote media via URL.",
     "emptyAction": "Upload / Save URL",
+    "emptyNoResultsTitle": "No matching media",
+    "emptyNoResultsHint": "Try a different keyword or clear the filters.",
+    "emptyNoResultsReset": "Clear filters",
     "pagerText": "Page {page} / {total} · {count} items",
     "refreshed": "Data refreshed",
     "kind": {
@@ -97,10 +100,16 @@
     "close": "Close",
     "emptyTitle": "No media selected",
     "emptyHint": "Click an item in the list to see details.",
+    "metadataTitle": "Metadata",
     "id": "ID",
     "kind": "Kind",
     "size": "Size",
+    "mime": "MIME",
+    "duration": "Duration",
+    "category": "Category",
     "created": "Created",
+    "updated": "Updated",
+    "zoomIn": "View full size",
     "fieldFilename": "Filename",
     "fieldFilenamePlaceholder": "filename",
     "fieldFilenameWarn": "After renaming, old direct/share links will break (the file on disk will be renamed).",
@@ -113,7 +122,7 @@
     "saved": "Media updated",
     "copy": "Copy link",
     "open": "Open",
-    "delete": "Delete"
+    "delete": "Move to trash"
   },
   "player": {
     "copyLink": "Copy link",
@@ -129,7 +138,15 @@
     "aria": "Audio player",
     "expand": "Expand player",
     "minimize": "Minimize",
-    "close": "Close"
+    "close": "Close",
+    "play": "Play",
+    "pause": "Pause",
+    "seekBack": "Seek back 10s",
+    "seekForward": "Seek forward 10s",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "volume": "Volume",
+    "speed": "Speed"
   },
   "upload": {
     "title": "Save media",
@@ -155,7 +172,13 @@
     "globalDropTitle": "Drop to upload to current category",
     "globalDropHint": "Files will be uploaded to \"{category}\"",
     "dropQueued": "Queued {count} files → {category}",
-    "pasteQueued": "Queued {count} pasted files → {category}"
+    "pasteQueued": "Queued {count} pasted files → {category}",
+    "duplicateTitle": "Duplicate detected",
+    "duplicateMessage": "A file with the same SHA256 already exists: \"{name}\".",
+    "duplicateDetail": "Continue to upload a new copy with identical content, or cancel this upload.",
+    "duplicateContinue": "Continue upload",
+    "duplicateCancel": "Cancel upload",
+    "duplicateCancelled": "Duplicate upload cancelled"
   },
   "uploadProgress": {
     "uploading": "Uploading · {count} · {progress}%",
@@ -235,16 +258,16 @@
     "pruneNone": "No empty categories to prune"
   },
   "mediaAction": {
-    "deleteTitle": "Delete media",
-    "deleteConfirm": "Delete this media?",
-    "deleteDetail": "The file on disk will be removed and cannot be recovered.",
-    "deleteBtn": "Delete",
-    "deleted": "Media deleted",
-    "batchDeleteTitle": "Batch delete",
-    "batchDeleteConfirm": "Delete {count} selected media?",
-    "batchDeleteDetail": "All selected files will be removed from database and disk one by one. This is irreversible.",
-    "batchDeleteBtn": "Delete {count}",
-    "batchDeleteDone": "Batch delete done: {ok} / {total}",
+    "deleteTitle": "Move to trash",
+    "deleteConfirm": "Move this media to trash?",
+    "deleteDetail": "The file will be kept in trash and can be restored within retention days.",
+    "deleteBtn": "Move to trash",
+    "deleted": "Media moved to trash",
+    "batchDeleteTitle": "Batch move to trash",
+    "batchDeleteConfirm": "Move {count} selected media to trash?",
+    "batchDeleteDetail": "Selected files will be moved to trash one by one and can be restored before expiry.",
+    "batchDeleteBtn": "Move {count}",
+    "batchDeleteDone": "Batch action done: {ok} / {total}",
     "linkCopied": "Link copied to clipboard",
     "linkEmpty": "No link returned",
     "urlEmpty": "Link is empty",
@@ -256,7 +279,7 @@
     "ctxCopyLink": "Copy link",
     "ctxSave": "Save",
     "ctxOpen": "Open",
-    "ctxDelete": "Delete"
+    "ctxDelete": "Move to trash"
   },
   "dataBrowser": {
     "parent": "Parent",
@@ -330,6 +353,18 @@
     "settingsExportFailed": "Export failed",
     "settingsImportDone": "Settings imported",
     "settingsImportFailed": "Import failed",
+    "trashTitle": "Trash / Duplicate tools",
+    "trashRetentionLabel": "Trash retention days",
+    "trashRetentionHint": "Items older than this will be purged permanently",
+    "trashRetentionSaved": "Trash retention updated",
+    "trashPurgeTitle": "Purge expired trash",
+    "trashPurgeConfirm": "This permanently deletes all expired trash items. Continue?",
+    "trashPurgeNow": "Purge expired now",
+    "trashPurgedDone": "Purged {count} expired item(s)",
+    "duplicatesTitle": "Duplicate inspection",
+    "duplicatesHint": "Open the exact-duplicate (SHA) view for cleanup",
+    "openTrash": "Open trash",
+    "openDuplicates": "Open duplicates",
     "stat": {
       "total": "Total",
       "totalDesc": "Overall count",
@@ -344,6 +379,40 @@
       "size": "Disk usage",
       "sizeDesc": "Total size"
     }
+  },
+  "trash": {
+    "searchPlaceholder": "Search trash by filename / description / SHA",
+    "searchBtn": "Search",
+    "refresh": "Refresh",
+    "emptyTitle": "Trash is empty",
+    "emptyHint": "Deleted media appears here first for restore or permanent delete.",
+    "deletedAt": "Deleted at {time}",
+    "remainingDays": "{days} day(s) until auto purge",
+    "restore": "Restore",
+    "purge": "Delete forever",
+    "pagerText": "Page {page} / {total} · {count} items",
+    "restoreTitle": "Restore media",
+    "restoreConfirm": "Restore \"{name}\"?",
+    "restoreDone": "Restored {name}",
+    "purgeTitle": "Permanent delete",
+    "purgeConfirm": "Delete \"{name}\" permanently?",
+    "purgeDetail": "This action cannot be undone.",
+    "purgeDone": "Deleted {name} permanently"
+  },
+  "duplicates": {
+    "modeSuspect": "Suspected duplicates",
+    "modeExact": "Exact duplicates (SHA)",
+    "emptyTitle": "No duplicates found",
+    "emptyHint": "No duplicate groups were detected for this mode.",
+    "groupExact": "Exact group · {count} item(s)",
+    "groupSuspect": "Suspected group · {count} item(s)",
+    "preview": "Preview",
+    "detail": "Details",
+    "delete": "Move to trash",
+    "deleteTitle": "Handle duplicate",
+    "deleteConfirm": "Move this item to trash?",
+    "deleteDone": "Moved to trash",
+    "pagerText": "Page {page} / {total} · {count} groups"
   },
   "confirm": {
     "defaultTitle": "Please confirm",

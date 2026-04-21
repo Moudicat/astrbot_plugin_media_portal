@@ -145,6 +145,45 @@
           </section>
 
           <section class="settings-section">
+            <h4>{{ $t("settings.trashTitle") }}</h4>
+            <div class="settings-row">
+              <div class="label">
+                <strong>{{ $t("settings.trashRetentionLabel") }}</strong>
+                <small>{{ $t("settings.trashRetentionHint") }}</small>
+              </div>
+              <div class="settings-actions-row">
+                <input
+                  v-model.number="trashRetentionDraft"
+                  type="number"
+                  min="1"
+                  max="3650"
+                  style="width: 110px"
+                />
+                <button class="ghost" :disabled="trashSaving" @click="saveTrashRetention">
+                  <Icon name="save" :size="14" />
+                  <span>{{ trashSaving ? $t("settings.backupBusy") : $t("common.save") }}</span>
+                </button>
+                <button class="ghost" @click="$emit('purge-trash-expired')">
+                  <Icon name="eraser" :size="14" />
+                  <span>{{ $t("settings.trashPurgeNow") }}</span>
+                </button>
+              </div>
+            </div>
+            <div class="settings-row">
+              <div class="label">
+                <strong>{{ $t("settings.duplicatesTitle") }}</strong>
+                <small>{{ $t("settings.duplicatesHint") }}</small>
+              </div>
+              <div class="settings-actions-row">
+                <button class="ghost" @click="$emit('open-duplicates')">
+                  <Icon name="search-x" :size="14" />
+                  <span>{{ $t("settings.openDuplicates") }}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section">
             <h4>{{ $t("settings.backupTitle") }}</h4>
             <div class="settings-row">
               <div class="label">
@@ -258,6 +297,7 @@ const STAT_CARD_OPTIONS = [
 interface Props {
   visible?: boolean;
   statVisibility?: StatVisibility;
+  trashRetentionDays?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -270,12 +310,16 @@ const props = withDefaults(defineProps<Props>(), {
     cat: true,
     size: true,
   }),
+  trashRetentionDays: 30,
 });
 
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "prune-categories"): void;
   (e: "update-stat-visibility", payload: Partial<StatVisibility>): void;
+  (e: "open-duplicates"): void;
+  (e: "update-trash-retention", days: number): void;
+  (e: "purge-trash-expired"): void;
 }>();
 
 const { t } = useI18n();
@@ -288,6 +332,8 @@ const toast = useToastStore();
 const pruneBusy = ref(false);
 const exportBusy = ref(false);
 const importBusy = ref(false);
+const trashSaving = ref(false);
+const trashRetentionDraft = ref(Number(props.trashRetentionDays || 30) || 30);
 const replaceMedia = ref(false);
 const importInput = ref<HTMLInputElement | null>(null);
 const settingsInput = ref<HTMLInputElement | null>(null);
@@ -314,10 +360,20 @@ watch(
   (value) => {
     if (value) {
       pruneBusy.value = false;
+      trashSaving.value = false;
+      trashRetentionDraft.value = Number(props.trashRetentionDays || 30) || 30;
       window.addEventListener("keydown", onKey);
     } else {
       window.removeEventListener("keydown", onKey);
     }
+  },
+);
+
+watch(
+  () => props.trashRetentionDays,
+  (value) => {
+    if (!props.visible) return;
+    trashRetentionDraft.value = Number(value || 30) || 30;
   },
 );
 
@@ -349,6 +405,16 @@ function setAll(value: boolean) {
 
 function presetColor(color: ThemeColor) {
   return THEME_COLOR_PRESETS[color]?.primary || "#6366f1";
+}
+
+function saveTrashRetention() {
+  const normalized = Math.max(1, Math.min(3650, Number(trashRetentionDraft.value) || 30));
+  trashRetentionDraft.value = normalized;
+  trashSaving.value = true;
+  emit("update-trash-retention", normalized);
+  setTimeout(() => {
+    trashSaving.value = false;
+  }, 500);
 }
 
 function applyPageSize(size: number) {

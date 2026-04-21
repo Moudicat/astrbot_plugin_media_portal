@@ -34,6 +34,28 @@ export function formatDateShort(raw: number | string | null | undefined): string
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/**
+ * 列表/卡片副信息里使用的「较详细」时间：
+ *   - 同年：MM-DD HH:mm
+ *   - 跨年：YY-MM-DD HH:mm
+ */
+export function formatDateTimeShort(raw: number | string | null | undefined): string {
+  if (raw === undefined || raw === null || raw === "") return "";
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return "";
+  const ms = num > 1e12 ? num : num * 1000;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (d.getFullYear() === now.getFullYear()) {
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+  }
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${yy}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`;
+}
+
 export function formatDuration(raw: number | string | null | undefined): string {
   const num = Number(raw);
   if (!Number.isFinite(num) || num <= 0) return "";

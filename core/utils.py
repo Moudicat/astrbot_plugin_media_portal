@@ -324,6 +324,12 @@ def probe_audio_duration(path: Path) -> float | None:
     return value if value > 0 else None
 
 
+def _ffprobe_binary() -> str | None:
+    import shutil as _shutil
+
+    return _shutil.which("ffprobe")
+
+
 def probe_video_duration_via_ffprobe(path: Path, timeout: float = 5.0) -> float | None:
     """调用系统 ``ffprobe`` 读取视频时长（秒）。
 
@@ -331,10 +337,9 @@ def probe_video_duration_via_ffprobe(path: Path, timeout: float = 5.0) -> float 
     - 仅用于 mutagen 不支持的容器（mkv / webm / avi / flv 等）的兜底
     """
     import json
-    import shutil as _shutil
     import subprocess
 
-    ffprobe = _shutil.which("ffprobe")
+    ffprobe = _ffprobe_binary()
     if not ffprobe:
         return None
     try:

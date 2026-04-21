@@ -1596,6 +1596,10 @@ button.block {
   margin-top: 14px;
 }
 
+.drawer-preview-wrap {
+  padding: 0;
+}
+
 .drawer-preview {
   position: relative;
   height: 280px;
@@ -1606,6 +1610,9 @@ button.block {
   background-image: var(--checker);
   display: grid;
   place-items: center;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  transition: transform 0.35s ease;
 }
 
 .drawer-preview img,
@@ -1616,25 +1623,81 @@ button.block {
   height: auto;
   object-fit: contain;
   display: block;
+  transition: transform 0.5s ease;
 }
 
-.drawer-meta {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 12px;
-  font-size: 13px;
+.drawer-preview:hover img,
+.drawer-preview:hover video {
+  transform: scale(1.04);
 }
 
-.drawer-meta dt {
-  color: var(--text-muted);
-  font-weight: 500;
+.meta-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.drawer-meta dd {
+.meta-title {
   margin: 0;
-  word-break: break-all;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.meta-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+  row-gap: 12px;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.meta-item dt {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.meta-item dd {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.meta-item dd.meta-mono {
   font-family: var(--font-mono);
   font-size: 12.5px;
+}
+
+.meta-item dd.ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.meta-kind .icon {
+  color: var(--primary, #4e44e2);
 }
 
 .field {
@@ -2153,12 +2216,159 @@ button.player-nav:disabled,
   gap: 4px;
 }
 
-.audio-dock audio {
+.audio-dock-player {
   width: 100%;
   min-width: 0;
   grid-column: span 3;
   margin-top: 2px;
-  height: 36px;
+  display: grid;
+  gap: 8px;
+}
+
+.audio-dock-player audio {
+  display: none;
+}
+
+.audio-dock-main {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.audio-dock-main > button.icon.sm,
+.audio-dock-main > .audio-volume-wrap {
+  margin-top: -1px;
+}
+
+.audio-time-inline {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 78px;
+  text-align: right;
+  letter-spacing: 0.01em;
+}
+
+.audio-progress,
+.audio-volume {
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+}
+
+.audio-progress {
+  --audio-progress: 0%;
+}
+
+.audio-volume {
+  background: color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%);
+}
+
+.audio-progress::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--primary) 0%,
+    var(--primary) var(--audio-progress),
+    color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%) var(--audio-progress),
+    color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%) 100%
+  );
+}
+
+.audio-volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%);
+}
+
+.audio-progress::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%);
+}
+
+.audio-progress::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.audio-volume::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 76%, var(--surface-2) 24%);
+}
+
+.audio-progress::-webkit-slider-thumb,
+.audio-volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 50%, transparent);
+}
+
+.audio-progress::-moz-range-thumb,
+.audio-volume::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: var(--primary);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 50%, transparent);
+}
+
+.audio-volume-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.audio-volume-wrap::after {
+  content: "";
+  position: absolute;
+  left: -10px;
+  right: -10px;
+  bottom: 100%;
+  height: 14px;
+}
+
+.audio-volume-pop {
+  position: absolute;
+  right: -2px;
+  bottom: calc(100% + 2px);
+  width: 40px;
+  height: 120px;
+  padding: 10px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-0) 88%, #0f172a 12%);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.audio-volume-wrap:hover .audio-volume-pop,
+.audio-volume-wrap:focus-within .audio-volume-pop {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.audio-volume {
+  width: 92px;
+  transform: rotate(-90deg);
+  transform-origin: center;
+  margin: 44px -34px;
 }
 
 /* 最小化胶囊：只剩头像 + 标题 + 展开按钮。
@@ -2174,6 +2384,10 @@ button.player-nav:disabled,
 }
 
 .audio-dock.is-mini .audio-dock-meta small {
+  display: none;
+}
+
+.audio-dock.is-mini .audio-dock-player {
   display: none;
 }
 
@@ -3547,8 +3761,24 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
     border-radius: var(--radius-md);
   }
 
-  .audio-dock audio {
-    height: 32px;
+  .audio-dock-main {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .audio-time-inline {
+    font-size: 10.5px;
+    min-width: 68px;
+  }
+
+  .audio-volume-pop {
+    right: -6px;
+    height: 108px;
+  }
+
+  .audio-volume {
+    width: 84px;
+    margin: 38px -30px;
   }
 
   .drawer {
@@ -3622,9 +3852,17 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
     transform: translateY(24px);
   }
 
-  .drawer-meta {
-    font-size: 12.5px;
-    gap: 4px 10px;
+  .meta-grid {
+    column-gap: 12px;
+    row-gap: 10px;
+  }
+
+  .meta-item dd {
+    font-size: 13px;
+  }
+
+  .meta-item dd.meta-mono {
+    font-size: 12px;
   }
 
   /* 底部按钮合并一行：主操作独占一行，其余 3 个均分一行 */
@@ -4034,31 +4272,78 @@ html[data-grid-density="comfortable"] .media-grid {
   gap: 18px;
 }
 
+/* ------------------------------------------------------------
+ * List view — modern file-browser style (Linear / Finder inspired)
+ *   整体作为一个面板容器：紧凑行 + 悬停高亮 + 选中左竖条
+ * ---------------------------------------------------------- */
+
 html[data-grid-mode="list"] .media-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
+/* 行：去除卡片化（无边框 / 无阴影 / 透明底） */
 html[data-grid-mode="list"] .media-grid .media-card {
   flex-direction: row;
-  align-items: stretch;
-  height: 96px;
-  min-height: 96px;
-  max-height: 96px;
-  overflow: hidden;
-}
-
-html[data-grid-mode="list"] .media-grid .media-card .media-preview {
-  flex: 0 0 144px;
-  aspect-ratio: auto;
-  width: 144px;
-  height: 96px;
-  min-height: 96px;
-  max-height: 96px;
-  border-radius: 0;
+  align-items: center;
+  height: 64px;
+  min-height: 64px;
+  max-height: 64px;
+  padding: 8px 10px 8px 14px;
+  gap: 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  box-shadow: none;
   overflow: hidden;
   position: relative;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+html[data-grid-mode="list"] .media-grid .media-card:hover {
+  background: var(--surface-1);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+html[data-grid-mode="list"] .media-grid .media-card.selected {
+  background: var(--primary-soft);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* 选中左侧竖条指示 */
+html[data-grid-mode="list"] .media-grid .media-card.selected::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+/* 缩略图：方形圆角小图 */
+html[data-grid-mode="list"] .media-grid .media-card .media-preview {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .media-preview img,
@@ -4069,9 +4354,51 @@ html[data-grid-mode="list"] .media-grid .media-card .media-preview video {
   object-position: center;
 }
 
+html[data-grid-mode="list"] .media-grid .media-card:hover .media-preview img,
+html[data-grid-mode="list"] .media-grid .media-card:hover .media-preview video {
+  transform: none;
+}
+
+/* 列表模式下隐藏缩略图上的 overlay（类型 / 时长 / 操作），
+ * 类型信息改放到"分类"前的彩色小点里 */
+html[data-grid-mode="list"] .media-grid .media-card .media-preview .preview-overlay {
+  display: none;
+}
+
+/* 分类前的彩色小点：按 data-kind 上色作为媒体类型指示
+ *   image=紫 / video=蓝 / audio=绿 / 其他=灰 */
+html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span:nth-child(1) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span:nth-child(1)::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+}
+html[data-grid-mode="list"] .media-grid .media-card[data-kind="image"] .card-meta .sub > span:nth-child(1)::before {
+  background: #8b5cf6;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.22);
+}
+html[data-grid-mode="list"] .media-grid .media-card[data-kind="video"] .card-meta .sub > span:nth-child(1)::before {
+  background: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
+}
+html[data-grid-mode="list"] .media-grid .media-card[data-kind="audio"] .card-meta .sub > span:nth-child(1)::before {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.22);
+}
+
+/* 占位（音频/文件）仅保留图标，隐藏文字 */
 html[data-grid-mode="list"] .media-grid .media-card .media-preview .audio-placeholder,
 html[data-grid-mode="list"] .media-grid .media-card .media-preview .file-placeholder {
-  padding: 6px 10px;
+  padding: 0;
+  gap: 0;
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .media-preview .audio-placeholder small,
@@ -4079,51 +4406,85 @@ html[data-grid-mode="list"] .media-grid .media-card .media-preview .file-placeho
   display: none;
 }
 
-html[data-grid-mode="list"] .media-grid .media-card .media-preview .preview-overlay {
-  padding: 6px;
+html[data-grid-mode="list"] .media-grid .media-card .media-preview .audio-placeholder .disc {
+  width: 30px;
+  height: 30px;
+  box-shadow: none;
 }
 
-html[data-grid-mode="list"] .media-grid .media-card .media-preview .preview-actions {
-  display: none;
+html[data-grid-mode="list"] .media-grid .media-card .media-preview .audio-placeholder .disc svg {
+  width: 16px;
+  height: 16px;
 }
 
-html[data-grid-mode="list"] .media-grid .media-card .media-preview .preview-duration {
-  right: 4px;
-  bottom: 4px;
-  padding: 2px 6px;
-  font-size: 10px;
-}
-
+/* 卡片主体 */
 html[data-grid-mode="list"] .media-grid .media-card .media-card-body {
   flex: 1;
   min-width: 0;
-  padding: 10px 14px;
+  padding: 0;
+  gap: 10px;
   align-items: center;
-  gap: 12px;
+}
+
+/* checkbox：非 hover/selected 时弱化 */
+html[data-grid-mode="list"] .media-grid .media-card .card-check {
+  margin-top: 0;
+  opacity: 0.35;
+  transition: opacity var(--transition-fast);
+}
+
+html[data-grid-mode="list"] .media-grid .media-card:hover .card-check,
+html[data-grid-mode="list"] .media-grid .media-card.selected .card-check,
+html[data-grid-mode="list"] .media-grid .media-card:focus-within .card-check {
+  opacity: 1;
+}
+
+/* 文件名与副信息 */
+html[data-grid-mode="list"] .media-grid .media-card .card-meta {
+  gap: 3px;
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .card-meta strong {
-  font-size: 14px;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub {
-  font-size: 12px;
+  font-size: 11.5px;
+  gap: 8px;
+  color: var(--text-subtle);
   flex-wrap: nowrap;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span {
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 
+html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub .mono {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub .dot {
+  width: 2px;
+  height: 2px;
+  opacity: 0.6;
+}
+
+/* 操作按钮：紧凑方形、hover 才显示 */
 html[data-grid-mode="list"] .media-grid .media-card .list-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   margin-left: auto;
-  padding-right: 4px;
+  flex: 0 0 auto;
   opacity: 0;
   transform: translateX(4px);
   transition: opacity var(--transition-fast), transform var(--transition-fast);
@@ -4137,56 +4498,135 @@ html[data-grid-mode="list"] .media-grid .media-card:focus-within .list-actions {
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .list-actions button {
-  min-height: 32px;
-  width: 32px;
+  min-height: 30px;
+  width: 30px;
   padding: 0;
   justify-content: center;
-  border-radius: 50%;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
   color: var(--text-muted);
   transition: background var(--transition-fast), color var(--transition-fast),
     border-color var(--transition-fast);
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .list-actions button:hover {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
+  background: var(--surface-2);
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 
 html[data-grid-mode="list"] .media-grid .media-card .list-actions button.danger:hover {
-  background: var(--danger);
-  border-color: var(--danger);
+  background: var(--danger, #ef4444);
+  color: #fff;
+  border-color: transparent;
 }
 
-html[data-grid-mode="list"] .media-grid .media-card:hover .media-preview img,
-html[data-grid-mode="list"] .media-grid .media-card:hover .media-preview video {
-  transform: none;
+/* 宽屏：切换为表格化栅格布局
+ *   把 filename 与 sub 内的 category / size / date 拆分成独立列，
+ *   通过 display: contents 让它们直接成为 .media-card-body 的网格项。
+ */
+@media (min-width: 900px) {
+  html[data-grid-mode="list"] .media-grid .media-card .media-card-body {
+    display: grid;
+    grid-template-columns:
+      auto
+      minmax(0, 1fr)
+      minmax(80px, 180px)
+      88px
+      120px
+      auto;
+    align-items: center;
+    gap: 14px;
+    padding: 0;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-check {
+    grid-column: 1;
+    justify-self: center;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta {
+    display: contents;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta strong {
+    grid-column: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub {
+    display: contents;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub .dot {
+    display: none;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span {
+    font-size: 12px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span:nth-child(1) {
+    grid-column: 3;
+    color: var(--text);
+    opacity: 0.85;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span:nth-child(3) {
+    grid-column: 4;
+    justify-self: end;
+    text-align: right;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-meta .sub > span:nth-child(5) {
+    grid-column: 5;
+    justify-self: end;
+    text-align: right;
+    font-size: 11.5px;
+    color: var(--text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .list-actions {
+    grid-column: 6;
+    margin-left: 0;
+    justify-self: end;
+  }
 }
 
+/* 触屏：操作/勾选常显 */
 @media (hover: none) {
   html[data-grid-mode="list"] .media-grid .media-card .list-actions {
     opacity: 1;
     transform: translateX(0);
   }
+  html[data-grid-mode="list"] .media-grid .media-card .card-check {
+    opacity: 1;
+  }
 }
 
+/* 移动端：更紧凑 */
 @media (max-width: 640px) {
+  html[data-grid-mode="list"] .media-grid {
+    padding: 4px;
+    gap: 1px;
+  }
   html[data-grid-mode="list"] .media-grid .media-card {
-    height: 84px;
-    min-height: 84px;
-    max-height: 84px;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
+    padding: 6px 6px 6px 10px;
+    gap: 10px;
   }
   html[data-grid-mode="list"] .media-grid .media-card .media-preview {
-    flex: 0 0 108px;
-    width: 108px;
-    height: 84px;
-    min-height: 84px;
-    max-height: 84px;
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    max-height: 44px;
   }
   html[data-grid-mode="list"] .media-grid .media-card .media-card-body {
-    padding: 8px 10px;
     gap: 8px;
   }
   html[data-grid-mode="list"] .media-grid .media-card .list-actions {
@@ -4194,8 +4634,11 @@ html[data-grid-mode="list"] .media-grid .media-card:hover .media-preview video {
     transform: translateX(0);
   }
   html[data-grid-mode="list"] .media-grid .media-card .list-actions button {
-    min-height: 30px;
-    width: 30px;
+    min-height: 28px;
+    width: 28px;
+  }
+  html[data-grid-mode="list"] .media-grid .media-card .card-check {
+    opacity: 1;
   }
 }
 

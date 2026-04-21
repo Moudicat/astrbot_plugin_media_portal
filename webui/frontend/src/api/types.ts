@@ -89,8 +89,67 @@ export interface PortalConfig {
   expose_astrbot_data: boolean;
   max_file_size_mb: number;
   max_file_size_bytes: number;
+  trash_retention_days?: number;
   readonly_token?: string;
   data_token?: string;
+}
+
+export interface TrashItem {
+  id: number;
+  original_media_id: number;
+  category: string;
+  filename: string;
+  original_rel_path: string;
+  trash_rel_path: string;
+  abs_path: string;
+  kind: MediaKind;
+  mime: string;
+  size: number;
+  size_human?: string;
+  sha256: string;
+  source_url?: string;
+  sender_id?: string;
+  description?: string;
+  tags?: string[];
+  created_at?: number;
+  updated_at?: number;
+  deleted_at?: number;
+  duration?: number;
+  expires_at?: number;
+  remaining_days?: number;
+}
+
+export interface TrashListResp {
+  items: TrashItem[];
+  total: number;
+  total_pages: number;
+  page: number;
+  page_size: number;
+}
+
+export interface TrashStatsResp {
+  total_count: number;
+  total_size: number;
+  total_size_human: string;
+  expired_count: number;
+  retention_days: number;
+}
+
+export interface DuplicateGroup {
+  group_key: string;
+  reason: string;
+  confidence: "exact" | "suspect" | string;
+  count: number;
+  items: MediaItem[];
+}
+
+export interface DuplicateGroupsResp {
+  items: DuplicateGroup[];
+  total: number;
+  total_pages: number;
+  page: number;
+  page_size: number;
+  mode: string;
 }
 
 export interface UploadResp {
@@ -103,6 +162,7 @@ export interface SaveUrlPayload {
   description?: string;
   url: string;
   filename?: string;
+  duplicate_policy?: "error" | "force" | "reuse" | string;
 }
 
 export type ToastType = "success" | "error" | "info" | "warning";

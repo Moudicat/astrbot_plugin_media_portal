@@ -7,7 +7,7 @@ import pytest
 
 from core.category_manager import CategoryManager
 from core.downloader import DownloadedFile, MediaDownloader
-from core.media_manager import MediaManager
+from core.media_manager import DuplicateMediaError, MediaManager
 
 
 def _build_manager(base_dir: Path) -> MediaManager:
@@ -179,10 +179,12 @@ def test_delete_category_removes_rows_and_files(tmp_path: Path) -> None:
 
             result = await manager.delete_category("trash", remove_files=True)
             payload = await manager.list_media(category="trash", page=1, page_size=10)
+            trash_payload = await manager.list_trash(page=1, page_size=10)
 
             assert result["deleted_rows"] == 1
             assert result["deleted_files"] == 1
             assert payload["total"] == 0
+            assert trash_payload["total"] == 1
             assert Path(record.abs_path).exists() is False
         finally:
             await manager.close()
@@ -674,6 +676,109 @@ def test_rename_category_rolls_back_when_index_update_fails(
             assert (manager.media_root / "oldcat").exists() is True
             assert (manager.media_root / "newcat").exists() is False
             assert "newcat" not in manager.category_manager.list_categories()
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_save_from_local_path_duplicate_policy_error_and_force(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            first = tmp_path / "dup_a.png"
+            first.write_bytes(b"same-payload")
+            first_record = await manager.save_from_local_path(
+                str(first), category="dup_policy", move=False
+            )
+
+            duplicate = tmp_path / "dup_b.png"
+            duplicate.write_bytes(b"same-payload")
+            with pytest.raises(DuplicateMediaError):
+                await manager.save_from_local_path(
+                    str(duplicate),
+                    category="dup_policy",
+                    move=False,
+                    duplicate_policy="error",
+                )
+            assert duplicate.exists() is True
+
+            forced = await manager.save_from_local_path(
+                str(duplicate),
+                category="dup_policy",
+                move=False,
+                duplicate_policy="force",
+            )
+            payload = await manager.list_media(category="dup_policy", page=1, page_size=20)
+            assert first_record.id != forced.id
+            assert payload["total"] == 2
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_trash_restore_and_purge_flow(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            source = tmp_path / "trash_flow.png"
+            source.write_bytes(b"trash-flow")
+            record = await manager.save_from_local_path(
+                str(source), category="trash_case", move=False
+            )
+
+            trashed = await manager.trash_media(record.id)
+            assert trashed is not None
+            assert Path(record.abs_path).exists() is False
+            listed = await manager.list_media(category="trash_case", page=1, page_size=10)
+            assert listed["total"] == 0
+            trash_payload = await manager.list_trash(page=1, page_size=10)
+            assert trash_payload["total"] == 1
+
+            restored = await manager.restore_from_trash(trashed.id)
+            assert Path(restored.abs_path).exists() is True
+            listed_after = await manager.list_media(category="trash_case", page=1, page_size=10)
+            assert listed_after["total"] == 1
+
+            trashed_again = await manager.trash_media(restored.id)
+            assert trashed_again is not None
+            assert await manager.purge_trash(trashed_again.id) is True
+            final_trash = await manager.list_trash(page=1, page_size=10)
+            assert final_trash["total"] == 0
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
+def test_list_duplicate_groups_exact_only(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        manager = _build_manager(tmp_path)
+        await manager.initialize()
+        try:
+            # exact: 相同 sha，通过 force 绕过复用逻辑制造两条记录
+            exact_a = tmp_path / "exact_a.png"
+            exact_a.write_bytes(b"exact-dup")
+            await manager.save_from_local_path(str(exact_a), category="exact_a", move=False)
+
+            exact_b = tmp_path / "exact_b.png"
+            exact_b.write_bytes(b"exact-dup")
+            await manager.save_from_local_path(
+                str(exact_b),
+                category="exact_b",
+                move=False,
+                duplicate_policy="force",
+            )
+
+            exact_groups = await manager.list_duplicate_groups(mode="exact", page=1, page_size=20)
+            fallback_groups = await manager.list_duplicate_groups(mode="suspect", page=1, page_size=20)
+
+            assert exact_groups["total"] >= 1
+            assert any(group["confidence"] == "exact" for group in exact_groups["items"])
+            assert fallback_groups["mode"] == "exact"
         finally:
             await manager.close()
 

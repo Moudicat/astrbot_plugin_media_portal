@@ -31,6 +31,7 @@
 
 <script setup lang="ts">
 import { inject } from "vue";
+import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import MediaGrid from "@/components/media/MediaGrid.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -52,6 +53,7 @@ interface LayoutActions {
 const layout = inject<LayoutActions>("layoutActions")!;
 
 const { t } = useI18n();
+const router = useRouter();
 const auth = useAuthStore();
 const category = useCategoryStore();
 const media = useMediaStore();
@@ -71,9 +73,16 @@ function onPageChange(page: number) {
   media.setPage(page);
   media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
 }
-function onSelectCategory(cat: string) {
-  media.selectCategory(cat);
-  media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
+async function onSelectCategory(cat: string) {
+  const normalized = String(cat || "").trim();
+  try {
+    await router.replace({
+      name: "media",
+      query: normalized ? { category: normalized } : {},
+    });
+  } catch (_error) {
+    // ignore duplicated navigation
+  }
   ui.setSidebarOpen(false);
 }
 

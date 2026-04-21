@@ -11,9 +11,11 @@ export interface RequestOptions {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status = 0) {
+  detail: unknown;
+  constructor(message: string, status = 0, detail: unknown = null) {
     super(message);
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -46,10 +48,15 @@ export async function request<T = any>(url: string, opts: RequestOptions = {}): 
   }
 
   if (!response.ok) {
-    const detail =
-      (payload && (payload as any).detail) ||
-      (typeof payload === "string" && payload) ||
-      "请求失败";
+    const detailPayload =
+      (payload && (payload as any).detail !== undefined ? (payload as any).detail : undefined) ??
+      (typeof payload === "string" && payload ? payload : "请求失败");
+    const detailText =
+      typeof detailPayload === "string"
+        ? detailPayload
+        : typeof (detailPayload as any)?.message === "string"
+          ? String((detailPayload as any).message)
+          : "请求失败";
     if (response.status === 401) {
       try {
         const authStore = useAuthStore();
@@ -58,7 +65,7 @@ export async function request<T = any>(url: string, opts: RequestOptions = {}): 
         // pinia store 未就绪时忽略
       }
     }
-    throw new ApiError(typeof detail === "string" ? detail : "请求失败", response.status);
+    throw new ApiError(detailText, response.status, detailPayload);
   }
   return payload as T;
 }

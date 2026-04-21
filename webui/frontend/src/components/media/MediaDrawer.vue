@@ -18,27 +18,61 @@
         </div>
         <template v-else>
           <div class="drawer-content">
-            <div class="drawer-preview" @click="$emit('preview', media)">
-              <img v-if="media.kind === 'image'" :src="fileUrl" :alt="media.filename" />
-              <video v-else-if="media.kind === 'video'" :src="fileUrl" muted preload="metadata"></video>
-              <div v-else class="audio-placeholder">
-                <div class="disc">
-                  <Icon :name="media.kind === 'audio' ? 'music' : 'file'" :size="24" />
+            <div class="drawer-preview-wrap">
+              <div class="drawer-preview" @click="$emit('preview', media)">
+                <img v-if="media.kind === 'image'" :src="fileUrl" :alt="media.filename" />
+                <video v-else-if="media.kind === 'video'" :src="fileUrl" muted preload="metadata"></video>
+                <div v-else class="audio-placeholder">
+                  <div class="disc">
+                    <Icon :name="media.kind === 'audio' ? 'music' : 'file'" :size="24" />
+                  </div>
+                  <small>{{ media.kind }}</small>
                 </div>
-                <small>{{ media.kind }}</small>
               </div>
             </div>
 
-            <dl class="drawer-meta">
-              <dt>{{ $t("drawer.id") }}</dt>
-              <dd>{{ media.id }}</dd>
-              <dt>{{ $t("drawer.kind") }}</dt>
-              <dd><span class="badge primary">{{ media.kind }}</span></dd>
-              <dt>{{ $t("drawer.size") }}</dt>
-              <dd>{{ sizeLabel }}</dd>
-              <dt v-if="createdAtLabel">{{ $t("drawer.created") }}</dt>
-              <dd v-if="createdAtLabel">{{ createdAtLabel }}</dd>
-            </dl>
+            <section class="meta-block">
+              <h4 class="meta-title">{{ $t("drawer.metadataTitle") }}</h4>
+              <dl class="meta-grid">
+                <div class="meta-item">
+                  <dt>{{ $t("drawer.id") }}</dt>
+                  <dd class="meta-mono">{{ media.id }}</dd>
+                </div>
+                <div class="meta-item">
+                  <dt>{{ $t("drawer.kind") }}</dt>
+                  <dd>
+                    <span class="meta-kind">
+                      <Icon :name="kindIcon" :size="14" />
+                      <span>{{ kindLabel }}</span>
+                    </span>
+                  </dd>
+                </div>
+                <div class="meta-item">
+                  <dt>{{ $t("drawer.size") }}</dt>
+                  <dd>{{ sizeLabel }}</dd>
+                </div>
+                <div v-if="mimeLabel" class="meta-item">
+                  <dt>{{ $t("drawer.mime") }}</dt>
+                  <dd class="meta-mono ellipsis" :title="mimeLabel">{{ mimeLabel }}</dd>
+                </div>
+                <div v-if="durationLabel" class="meta-item">
+                  <dt>{{ $t("drawer.duration") }}</dt>
+                  <dd class="meta-mono">{{ durationLabel }}</dd>
+                </div>
+                <div v-if="categoryLabel" class="meta-item">
+                  <dt>{{ $t("drawer.category") }}</dt>
+                  <dd class="ellipsis" :title="categoryLabel">{{ categoryLabel }}</dd>
+                </div>
+                <div v-if="createdAtLabel" class="meta-item">
+                  <dt>{{ $t("drawer.created") }}</dt>
+                  <dd>{{ createdAtLabel }}</dd>
+                </div>
+                <div v-if="updatedAtLabel" class="meta-item">
+                  <dt>{{ $t("drawer.updated") }}</dt>
+                  <dd>{{ updatedAtLabel }}</dd>
+                </div>
+              </dl>
+            </section>
 
             <div class="field">
               <label>{{ $t("drawer.fieldFilename") }}</label>
@@ -103,10 +137,13 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import { buildMediaDirectUrl } from "@/utils/url";
-import { formatTimestamp } from "@/utils/format";
+import { formatDuration, formatTimestamp } from "@/utils/format";
 import type { CategoryItem, MediaItem } from "@/api/types";
+
+const { t } = useI18n();
 
 interface Props {
   visible?: boolean;
@@ -189,6 +226,30 @@ const filenameDirty = computed(() => {
 const createdAtLabel = computed(() =>
   props.media ? formatTimestamp(props.media.created_at) : "",
 );
+const updatedAtLabel = computed(() =>
+  props.media ? formatTimestamp(props.media.updated_at) : "",
+);
+const mimeLabel = computed(() => (props.media?.mime || "").trim());
+const durationLabel = computed(() =>
+  props.media ? formatDuration(props.media.duration) : "",
+);
+const categoryLabel = computed(() => (props.media?.category || "").trim());
+const kindLabel = computed(() => {
+  const k = props.media?.kind || "";
+  const map: Record<string, string> = {
+    image: t("media.kind.image"),
+    video: t("media.kind.video"),
+    audio: t("media.kind.audio"),
+  };
+  return map[k] || k || "-";
+});
+const kindIcon = computed(() => {
+  const k = props.media?.kind || "";
+  if (k === "image") return "image";
+  if (k === "video") return "film";
+  if (k === "audio") return "music";
+  return "file";
+});
 
 function save() {
   if (!props.media) return;

@@ -42,14 +42,19 @@ export const useUploadStore = defineStore("upload", {
       };
       this.jobs.push(job);
       this.panelOpen = true;
-      this.start(id, file);
+      this.start(id, file, "error");
     },
-    start(id: string, file: File) {
+    start(id: string, file: File, duplicatePolicy: "error" | "force" | "reuse" = "error") {
       const job = this.getJob(id);
       if (!job) return;
+      job.status = "uploading";
+      job.message = "";
+      job.progress = 0;
+      job.loaded = 0;
       const form = new FormData();
       form.append("category", job.category || "default");
       form.append("description", job.description || "");
+      form.append("duplicate_policy", duplicatePolicy);
       form.append("files", file, file.name);
 
       const xhr = new XMLHttpRequest();
@@ -86,11 +91,26 @@ export const useUploadStore = defineStore("upload", {
         if (xhr.status >= 200 && xhr.status < 300 && payload) {
           const savedList = Array.isArray(payload.saved) ? payload.saved : [];
           const errorsList = Array.isArray(payload.errors) ? payload.errors : [];
+          const duplicatesList = Array.isArray(payload.duplicates) ? payload.duplicates : [];
           if (savedList.length) {
             cur.status = "done";
             cur.progress = 100;
             cur.loaded = cur.size;
             cur.message = "已保存";
+          } else if (duplicatesList.length) {
+            const first = duplicatesList[0] || {};
+            const existed = first?.existing?.filename || file.name;
+            const ok = typeof window !== "undefined"
+              ? window.confirm(
+                  `检测到重复文件：${existed}\n继续上传将保存一个副本（相同 SHA256）。\n是否继续上传？`,
+                )
+              : false;
+            if (ok) {
+              this.start(id, file, "force");
+              return;
+            }
+            cur.status = "cancelled";
+            cur.message = "已取消（重复文件）";
           } else if (errorsList.length) {
             cur.status = "error";
             cur.message = extractErrorText(errorsList[0], file.name);

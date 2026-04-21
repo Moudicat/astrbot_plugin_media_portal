@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from astrbot_plugin_media_portal.core.media_manager import MediaRecord
+from astrbot_plugin_media_portal.core.media_manager import DuplicateMediaError, MediaRecord
 from astrbot_plugin_media_portal.core.utils import (
     detect_mime_and_kind,
     guess_filename_from_url,
@@ -44,15 +45,28 @@ class _RouteMediaManager:
         self.downloader = _DummyDownloader(plugin_data_dir / "temp")
         self.max_file_size = 6 * 1024 * 1024
         self._records: dict[int, MediaRecord] = {}
+        self._trash_records: dict[int, dict[str, object]] = {}
         self._next_id = 1
+        self._next_trash_id = 1
+        self._trash_retention_days = 30
         self._categories: set[str] = {"default"}
+        self.trash_root = self.plugin_data_dir / "trash"
         self.media_root.mkdir(parents=True, exist_ok=True)
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
+        self.trash_root.mkdir(parents=True, exist_ok=True)
 
-    def _create_record(self, file_path: Path, category: str, description: str = "") -> MediaRecord:
+    def _create_record(
+        self,
+        file_path: Path,
+        category: str,
+        description: str = "",
+        *,
+        sha256: str = "",
+    ) -> MediaRecord:
         mime, kind = detect_mime_and_kind(file_path)
         rel_path = f"{category}/{file_path.name}"
         now = time.time()
+        digest = sha256 or hashlib.sha256(file_path.read_bytes()).hexdigest()
         record = MediaRecord(
             id=self._next_id,
             category=category,
@@ -62,7 +76,7 @@ class _RouteMediaManager:
             kind=kind,
             mime=mime,
             size=file_path.stat().st_size,
-            sha256=f"sha-{self._next_id}",
+            sha256=digest,
             source_url="",
             sender_id="",
             description=description.strip(),
@@ -73,6 +87,17 @@ class _RouteMediaManager:
         self._records[self._next_id] = record
         self._next_id += 1
         return record
+
+    def _find_by_sha(self, sha256: str) -> MediaRecord | None:
+        for record in self._records.values():
+            if record.sha256 == sha256:
+                return record
+        return None
+
+    def _trash_to_payload(self, item: dict[str, object]) -> dict[str, object]:
+        payload = dict(item)
+        payload["size_human"] = f"{int(payload.get('size') or 0)}B"
+        return payload
 
     async def get_stats(self):
         by_kind: dict[str, int] = {}
@@ -262,6 +287,183 @@ class _RouteMediaManager:
         Path(record.abs_path).unlink(missing_ok=True)
         return True
 
+    async def trash_media(self, media_id: int):
+        record = self._records.pop(int(media_id), None)
+        if not record:
+            return None
+        source = Path(record.abs_path)
+        trash_rel_path = ""
+        if source.exists() and source.is_file():
+            target = self.trash_root / f"{self._next_trash_id}_{source.name}"
+            shutil.move(str(source), str(target))
+            trash_rel_path = target.name
+        deleted_at = time.time()
+        trash_id = self._next_trash_id
+        self._next_trash_id += 1
+        self._trash_records[trash_id] = {
+            "id": trash_id,
+            "original_media_id": record.id,
+            "category": record.category,
+            "filename": record.filename,
+            "original_rel_path": record.rel_path,
+            "trash_rel_path": trash_rel_path,
+            "kind": record.kind,
+            "mime": record.mime,
+            "size": int(record.size),
+            "sha256": record.sha256,
+            "source_url": record.source_url,
+            "sender_id": record.sender_id,
+            "description": record.description,
+            "tags": list(record.tags),
+            "created_at": float(record.created_at),
+            "updated_at": float(record.updated_at),
+            "deleted_at": deleted_at,
+        }
+        return type("_Trashed", (), {"id": trash_id})()
+
+    async def list_trash(
+        self,
+        *,
+        category: str = "",
+        query: str = "",
+        page: int = 1,
+        page_size: int = 20,
+    ):
+        items = list(self._trash_records.values())
+        if category:
+            normalized = slugify_category(category)
+            items = [item for item in items if str(item["category"]) == normalized]
+        key = query.strip().lower()
+        if key:
+            items = [
+                item
+                for item in items
+                if key in str(item["filename"]).lower()
+                or key in str(item["description"]).lower()
+                or key in str(item["sha256"]).lower()
+            ]
+        items.sort(key=lambda item: float(item.get("deleted_at") or 0), reverse=True)
+        total = len(items)
+        safe_page = max(1, int(page))
+        safe_page_size = max(1, int(page_size))
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        paged = items[start:end]
+        return {
+            "items": [self._trash_to_payload(item) for item in paged],
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_pages": (total + safe_page_size - 1) // safe_page_size if total else 0,
+        }
+
+    async def get_trash_stats(self):
+        total_size = sum(int(item.get("size") or 0) for item in self._trash_records.values())
+        now = time.time()
+        threshold = now - self._trash_retention_days * 86400
+        expired = sum(
+            1
+            for item in self._trash_records.values()
+            if float(item.get("deleted_at") or 0) <= threshold
+        )
+        return {
+            "total_count": len(self._trash_records),
+            "total_size": total_size,
+            "total_size_human": f"{total_size}B",
+            "expired_count": expired,
+            "retention_days": self._trash_retention_days,
+        }
+
+    async def restore_from_trash(
+        self,
+        trash_id: int,
+        *,
+        category: str = "",
+        filename: str = "",
+    ):
+        item = self._trash_records.pop(int(trash_id), None)
+        if not item:
+            raise ValueError("回收站记录不存在")
+        normalized = slugify_category(category or str(item["category"]))
+        self._categories.add(normalized)
+        target_dir = self.media_root / normalized
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_name = Path(filename.strip() or str(item["filename"])).name
+        target = target_dir / target_name
+        if target.exists():
+            target = target_dir / f"{target.stem}_{int(time.time())}{target.suffix}"
+        trash_rel = str(item.get("trash_rel_path") or "")
+        if trash_rel:
+            source = self.trash_root / trash_rel
+            if source.exists():
+                shutil.move(str(source), str(target))
+            else:
+                target.write_bytes(b"restored")
+        else:
+            target.write_bytes(b"restored")
+        return self._create_record(
+            target,
+            normalized,
+            description=str(item.get("description") or ""),
+            sha256=str(item.get("sha256") or ""),
+        )
+
+    async def purge_trash(self, trash_id: int):
+        item = self._trash_records.pop(int(trash_id), None)
+        if not item:
+            return False
+        trash_rel = str(item.get("trash_rel_path") or "")
+        if trash_rel:
+            (self.trash_root / trash_rel).unlink(missing_ok=True)
+        return True
+
+    async def purge_expired_trash(self, retention_days: int = 30):
+        now = time.time()
+        threshold = now - max(1, int(retention_days)) * 86400
+        purged = 0
+        for trash_id, item in list(self._trash_records.items()):
+            if float(item.get("deleted_at") or 0) > threshold:
+                continue
+            if await self.purge_trash(trash_id):
+                purged += 1
+        return {"purged": purged}
+
+    async def get_trash_retention_days(self):
+        return self._trash_retention_days
+
+    async def set_trash_retention_days(self, days: int):
+        self._trash_retention_days = max(1, int(days))
+        return self._trash_retention_days
+
+    async def list_duplicate_groups(self, *, mode: str = "exact", page: int = 1, page_size: int = 20):
+        grouped: dict[str, list[MediaRecord]] = {}
+        for record in self._records.values():
+            grouped.setdefault(record.sha256, []).append(record)
+        groups = [
+            {
+                "group_key": f"sha:{key}",
+                "reason": "sha256",
+                "confidence": "exact",
+                "count": len(records),
+                "items": [item.to_dict() for item in records],
+            }
+            for key, records in grouped.items()
+            if len(records) > 1
+        ]
+        total = len(groups)
+        safe_page = max(1, int(page))
+        safe_page_size = max(1, int(page_size))
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        return {
+            "items": groups[start:end],
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_pages": (total + safe_page_size - 1) // safe_page_size if total else 0,
+            "mode": "exact",
+        }
+
     async def save_from_local_path(
         self,
         src_path: str,
@@ -270,11 +472,20 @@ class _RouteMediaManager:
         description: str = "",
         filename: str = "",
         move: bool | None = None,
+        duplicate_policy: str = "error",
         **_kwargs,
     ):
         source = Path(src_path).resolve()
         if not source.exists() or not source.is_file():
             raise FileNotFoundError(f"本地文件不存在: {src_path}")
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        policy = str(duplicate_policy or "error")
+        if policy != "force":
+            existing = self._find_by_sha(source_hash)
+            if existing:
+                if policy == "error":
+                    raise DuplicateMediaError(existing)
+                return existing
         normalized = slugify_category(category)
         self._categories.add(normalized)
         target_dir = self.media_root / normalized
@@ -285,10 +496,16 @@ class _RouteMediaManager:
             shutil.copy2(source, target)
         else:
             shutil.move(str(source), str(target))
-        return self._create_record(target, normalized, description=description)
+        return self._create_record(target, normalized, description=description, sha256=source_hash)
 
     async def save_from_url(
-        self, url: str, *, category: str = "default", description: str = "", filename: str = ""
+        self,
+        url: str,
+        *,
+        category: str = "default",
+        description: str = "",
+        filename: str = "",
+        duplicate_policy: str = "error",
     ):
         temp_name = filename.strip() or guess_filename_from_url(url, default="remote")
         temp_file = self.downloader.temp_dir / temp_name
@@ -299,6 +516,7 @@ class _RouteMediaManager:
             description=description,
             filename=temp_name,
             move=True,
+            duplicate_policy=duplicate_policy,
         )
 
 
@@ -421,3 +639,110 @@ def test_save_url_upload_validation_and_prune(tmp_path: Path) -> None:
     pruned = client.post("/api/categories/prune", headers=headers)
     assert pruned.status_code == 200
     assert "removed_count" in pruned.json()
+
+
+def test_trash_duplicates_and_settings_endpoints(tmp_path: Path) -> None:
+    server = _build_server(tmp_path)
+    client = TestClient(server.app)
+    headers = _auth_header(client)
+
+    uploaded = client.post(
+        "/api/media/upload",
+        headers=headers,
+        data={"category": "dup", "description": "first"},
+        files=[("files", ("same.png", b"same-bytes", "image/png"))],
+    )
+    assert uploaded.status_code == 200
+    first_id = int(uploaded.json()["saved"][0]["id"])
+
+    duplicated = client.post(
+        "/api/media/upload",
+        headers=headers,
+        data={"category": "dup", "description": "dup-hit"},
+        files=[("files", ("same.png", b"same-bytes", "image/png"))],
+    )
+    assert duplicated.status_code == 200
+    dup_payload = duplicated.json()
+    assert len(dup_payload["duplicates"]) == 1
+    assert dup_payload["duplicates"][0]["code"] == "duplicate_sha256"
+
+    forced = client.post(
+        "/api/media/upload",
+        headers=headers,
+        data={"category": "dup", "description": "dup-force", "duplicate_policy": "force"},
+        files=[("files", ("same-copy.png", b"same-bytes", "image/png"))],
+    )
+    assert forced.status_code == 200
+    assert len(forced.json()["saved"]) == 1
+
+    exact_groups = client.get("/api/media/duplicates?mode=exact", headers=headers)
+    assert exact_groups.status_code == 200
+    assert exact_groups.json()["total"] >= 1
+
+    deleted = client.delete(f"/api/media/{first_id}", headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["soft_deleted"] is True
+    trash_id = int(deleted.json()["trash_id"])
+
+    trash_list = client.get("/api/trash", headers=headers)
+    assert trash_list.status_code == 200
+    assert trash_list.json()["total"] >= 1
+    assert "remaining_days" in trash_list.json()["items"][0]
+
+    trash_stats = client.get("/api/trash/stats", headers=headers)
+    assert trash_stats.status_code == 200
+    assert trash_stats.json()["total_count"] >= 1
+
+    settings_before = client.get("/api/settings/trash", headers=headers)
+    assert settings_before.status_code == 200
+    assert settings_before.json()["trash_retention_days"] >= 1
+
+    settings_after = client.patch(
+        "/api/settings/trash",
+        headers=headers,
+        json={"trash_retention_days": 7},
+    )
+    assert settings_after.status_code == 200
+    assert settings_after.json()["trash_retention_days"] == 7
+
+    purged_expired = client.post("/api/trash/purge-expired", headers=headers)
+    assert purged_expired.status_code == 200
+    assert "purged" in purged_expired.json()
+
+    restored = client.post(f"/api/trash/{trash_id}/restore", headers=headers, json={})
+    assert restored.status_code == 200
+    restored_id = int(restored.json()["id"])
+
+    deleted_again = client.delete(f"/api/media/{restored_id}", headers=headers)
+    assert deleted_again.status_code == 200
+    trash_id_2 = int(deleted_again.json()["trash_id"])
+
+    purged = client.delete(f"/api/trash/{trash_id_2}", headers=headers)
+    assert purged.status_code == 200
+    assert purged.json()["deleted"] is True
+
+    first_save_url = client.post(
+        "/api/media/save-url",
+        headers=headers,
+        json={"url": "https://example.com/sample.png", "category": "urlcat"},
+    )
+    assert first_save_url.status_code == 200
+
+    duplicate_save_url = client.post(
+        "/api/media/save-url",
+        headers=headers,
+        json={"url": "https://example.com/sample2.png", "category": "urlcat"},
+    )
+    assert duplicate_save_url.status_code == 409
+    assert duplicate_save_url.json()["detail"]["code"] == "duplicate_sha256"
+
+    forced_save_url = client.post(
+        "/api/media/save-url",
+        headers=headers,
+        json={
+            "url": "https://example.com/sample3.png",
+            "category": "urlcat",
+            "duplicate_policy": "force",
+        },
+    )
+    assert forced_save_url.status_code == 200

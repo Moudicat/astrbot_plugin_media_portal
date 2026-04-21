@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import aiosqlite
 from astrbot.api import logger
 
 from .category_manager import CategoryManager
+from .derivatives import DerivativesManager
 from .downloader import MediaDownloader
 from .utils import (
     detect_mime_and_kind,
@@ -56,7 +58,43 @@ class MediaRecord:
         return payload
 
 
+@dataclass(slots=True)
+class TrashRecord:
+    id: int
+    original_media_id: int
+    category: str
+    filename: str
+    original_rel_path: str
+    trash_rel_path: str
+    abs_path: str
+    kind: str
+    mime: str
+    size: int
+    sha256: str
+    source_url: str
+    sender_id: str
+    description: str
+    tags: list[str]
+    created_at: float
+    updated_at: float
+    deleted_at: float
+    duration: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["size_human"] = format_size(self.size)
+        return payload
+
+
+class DuplicateMediaError(ValueError):
+    def __init__(self, record: MediaRecord):
+        super().__init__("检测到 SHA256 重复文件。")
+        self.record = record
+
+
 class MediaManager:
+    DEFAULT_TRASH_RETENTION_DAYS = 30
+
     def __init__(
         self,
         media_root: Path,
@@ -75,10 +113,20 @@ class MediaManager:
         self.max_file_size = max_file_size_mb * 1024 * 1024
         self.default_move_local = default_move_local
         self.db_path = self.plugin_data_dir / "index.db"
+        self.trash_root = ensure_dir(self.plugin_data_dir / "trash")
         self._conn: aiosqlite.Connection | None = None
         self._db_lock = asyncio.Lock()
         # 串行化所有会同时修改磁盘与索引的写操作，避免事务与文件变更交叉。
         self._write_lock = asyncio.Lock()
+        self.derivatives = DerivativesManager(
+            media_root=self.media_root,
+            plugin_data_dir=self.plugin_data_dir,
+        )
+        # FTS5 能力探测结果；``_fts_enabled=False`` 时搜索会回退到 LIKE。
+        self._fts_enabled: bool = False
+        self._fts_tokenizer: str = ""
+        # 后台衍生任务（预生成缩略图 / 波形等），跟踪起来方便 close() 时统一清理。
+        self._derivative_tasks: set[asyncio.Task] = set()
 
     async def initialize(self) -> None:
         async with self._db_lock:
@@ -107,6 +155,50 @@ class MediaManager:
                 )
                 """
             )
+            await self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_trash (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_media_id INTEGER NOT NULL DEFAULT 0,
+                    category TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    original_rel_path TEXT NOT NULL,
+                    trash_rel_path TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    mime TEXT NOT NULL,
+                    size INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    source_url TEXT DEFAULT '',
+                    sender_id TEXT DEFAULT '',
+                    description TEXT DEFAULT '',
+                    tags TEXT DEFAULT '[]',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    deleted_at REAL NOT NULL,
+                    duration REAL NOT NULL DEFAULT 0
+                )
+                """
+            )
+            await self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            await self._conn.execute(
+                """
+                INSERT OR IGNORE INTO media_settings(key, value, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    "trash_retention_days",
+                    str(self.DEFAULT_TRASH_RETENTION_DAYS),
+                    now_ts(),
+                ),
+            )
             # 老库升级：duration 列不存在时补齐；SQLite 没有 IF NOT EXISTS，
             # 靠捕获 "duplicate column name" 识别已经迁移过。
             try:
@@ -125,13 +217,194 @@ class MediaManager:
             await self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_media_kind ON media(kind)"
             )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_trash_deleted_at ON media_trash(deleted_at)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_trash_sha256 ON media_trash(sha256)"
+            )
             await self._conn.commit()
+            await self._setup_fts5(self._conn)
 
     async def close(self) -> None:
+        pending = [task for task in self._derivative_tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            try:
+                await asyncio.gather(*pending, return_exceptions=True)
+            except Exception:
+                pass
+        self._derivative_tasks.clear()
         async with self._db_lock:
             if self._conn:
                 await self._conn.close()
             self._conn = None
+        self._fts_enabled = False
+        self._fts_tokenizer = ""
+
+    # ------------------ FTS5 ------------------
+
+    async def _probe_fts5_tokenizer(self, conn: aiosqlite.Connection) -> str:
+        """探测 FTS5 可用性与可用的分词器。
+
+        - 优先 ``trigram``（SQLite 3.34+，对 CJK 子串匹配更友好）；
+        - 回退到 ``unicode61``；
+        - 再不行返回空串，表示 FTS5 完全不可用。
+        """
+        for tokenizer in ("trigram", "unicode61"):
+            try:
+                await conn.execute(
+                    f"CREATE VIRTUAL TABLE __fts_probe USING fts5(x, tokenize='{tokenizer}')"
+                )
+                await conn.execute("DROP TABLE __fts_probe")
+                return tokenizer
+            except Exception:
+                try:
+                    await conn.execute("DROP TABLE IF EXISTS __fts_probe")
+                except Exception:
+                    pass
+                continue
+        return ""
+
+    async def _fts_table_exists(self, conn: aiosqlite.Connection) -> bool:
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='media_fts'"
+        )
+        row = await cursor.fetchone()
+        return bool(row)
+
+    async def _setup_fts5(self, conn: aiosqlite.Connection) -> None:
+        tokenizer = await self._probe_fts5_tokenizer(conn)
+        if not tokenizer:
+            logger.info("SQLite FTS5 不可用，媒体搜索将回退到 LIKE 模式。")
+            self._fts_enabled = False
+            self._fts_tokenizer = ""
+            return
+        try:
+            if not await self._fts_table_exists(conn):
+                await conn.execute(
+                    f"""
+                    CREATE VIRTUAL TABLE media_fts USING fts5(
+                        filename, description, tags, category,
+                        content='media',
+                        content_rowid='id',
+                        tokenize='{tokenizer}'
+                    )
+                    """
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO media_fts(rowid, filename, description, tags, category)
+                    SELECT id, filename, description, tags, category FROM media
+                    """
+                )
+            await conn.executescript(
+                """
+                CREATE TRIGGER IF NOT EXISTS media_ai_fts AFTER INSERT ON media BEGIN
+                    INSERT INTO media_fts(rowid, filename, description, tags, category)
+                    VALUES (new.id, new.filename, new.description, new.tags, new.category);
+                END;
+                CREATE TRIGGER IF NOT EXISTS media_ad_fts AFTER DELETE ON media BEGIN
+                    INSERT INTO media_fts(media_fts, rowid, filename, description, tags, category)
+                    VALUES ('delete', old.id, old.filename, old.description, old.tags, old.category);
+                END;
+                CREATE TRIGGER IF NOT EXISTS media_au_fts AFTER UPDATE ON media BEGIN
+                    INSERT INTO media_fts(media_fts, rowid, filename, description, tags, category)
+                    VALUES ('delete', old.id, old.filename, old.description, old.tags, old.category);
+                    INSERT INTO media_fts(rowid, filename, description, tags, category)
+                    VALUES (new.id, new.filename, new.description, new.tags, new.category);
+                END;
+                """
+            )
+            await conn.commit()
+        except Exception as exc:
+            logger.warning("FTS5 初始化失败，回退到 LIKE: %s", exc)
+            self._fts_enabled = False
+            self._fts_tokenizer = ""
+            return
+        self._fts_enabled = True
+        self._fts_tokenizer = tokenizer
+
+    # ------------------ 衍生资源（缩略图/海报/波形） ------------------
+
+    def _schedule_derivatives(self, record: MediaRecord) -> None:
+        """把单条记录的衍生资源生成派发到后台；异常不回传。"""
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is None:
+            # 没有事件循环可用（极少见），同步退化执行，保证最少生成一次。
+            try:
+                self.derivatives.generate_all_sync(record.rel_path, record.kind)
+            except Exception as exc:
+                logger.debug("同步生成衍生资源失败 %s: %s", record.rel_path, exc)
+            return
+        task = running.create_task(
+            self.derivatives.generate_all(record.rel_path, record.kind)
+        )
+        self._derivative_tasks.add(task)
+
+        def _on_done(done_task: asyncio.Task) -> None:
+            self._derivative_tasks.discard(done_task)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.debug("衍生资源后台任务失败: %s", exc)
+
+        task.add_done_callback(_on_done)
+
+    async def rebuild_fts_index(self) -> bool:
+        """强制重建 FTS 索引内容（当手动外部写入数据库或怀疑索引漂移时使用）。"""
+        if not self._fts_enabled:
+            return False
+        conn = await self._ensure_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute(
+                    "INSERT INTO media_fts(media_fts) VALUES ('rebuild')"
+                )
+                await conn.commit()
+                return True
+            except Exception as exc:
+                logger.warning("重建 FTS5 索引失败: %s", exc)
+                return False
+
+    def _fts_build_match(self, query: str) -> str | None:
+        """把用户输入转成 FTS5 MATCH 表达式；不可用时返回 ``None``。
+
+        - trigram 分词下，子串 >= 3 字符才能命中，短于 3 字符交给 LIKE 兜底。
+        - unicode61 按空白拆 token，每个 token 追加 ``*`` 做前缀匹配；纯中文字符串
+          经 unicode61 会被视为单个连续 token，此时我们也降级 LIKE，保证搜得到。
+        """
+        text = str(query or "").strip()
+        if not text:
+            return None
+        if self._fts_tokenizer == "trigram":
+            # 去除多余空白，统一做一次整体短语匹配；多 token 时依然拼成 AND。
+            tokens = [tok for tok in text.split() if tok]
+            if not tokens:
+                return None
+            if any(len(tok) < 3 for tok in tokens):
+                return None
+            return " ".join('"' + tok.replace('"', '""') + '"' for tok in tokens)
+        if self._fts_tokenizer == "unicode61":
+            tokens = [tok for tok in text.split() if tok]
+            if not tokens:
+                return None
+            # 只允许 ASCII token 走 FTS，中文 / 其它表意文字回退到 LIKE，
+            # 避免 unicode61 把整段中文当成单个 token 导致无法命中。
+            if any(not tok.isascii() for tok in tokens):
+                return None
+            parts: list[str] = []
+            for tok in tokens:
+                safe = tok.replace('"', '""')
+                parts.append('"' + safe + '"' + ("*" if len(tok) > 1 else ""))
+            return " ".join(parts)
+        return None
 
     async def _ensure_conn(self) -> aiosqlite.Connection:
         if self._conn is None:
@@ -205,6 +478,78 @@ class MediaManager:
             updated_at=float(row["updated_at"]),
             duration=duration_value,
         )
+
+    def _trash_row_to_record(self, row: aiosqlite.Row) -> TrashRecord:
+        tags = self._parse_tags(row["tags"])
+        trash_rel_path = str(row["trash_rel_path"] or "")
+        abs_path = (
+            str((self.trash_root / trash_rel_path).resolve())
+            if trash_rel_path
+            else ""
+        )
+        duration_raw = self._row_get(row, "duration", 0)
+        try:
+            duration_value = float(duration_raw) if duration_raw is not None else 0.0
+        except (TypeError, ValueError):
+            duration_value = 0.0
+        return TrashRecord(
+            id=int(row["id"]),
+            original_media_id=int(row["original_media_id"] or 0),
+            category=str(row["category"]),
+            filename=str(row["filename"]),
+            original_rel_path=str(row["original_rel_path"]),
+            trash_rel_path=trash_rel_path,
+            abs_path=abs_path,
+            kind=str(row["kind"]),
+            mime=str(row["mime"]),
+            size=int(row["size"]),
+            sha256=str(row["sha256"]),
+            source_url=str(row["source_url"] or ""),
+            sender_id=str(row["sender_id"] or ""),
+            description=str(row["description"] or ""),
+            tags=tags,
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+            deleted_at=float(row["deleted_at"]),
+            duration=duration_value,
+        )
+
+    async def get_trash_retention_days(self) -> int:
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT value FROM media_settings WHERE key = 'trash_retention_days'"
+        )
+        row = await cursor.fetchone()
+        value = self.DEFAULT_TRASH_RETENTION_DAYS
+        if row:
+            try:
+                value = int(str(row["value"]).strip() or self.DEFAULT_TRASH_RETENTION_DAYS)
+            except (TypeError, ValueError):
+                value = self.DEFAULT_TRASH_RETENTION_DAYS
+        return max(1, min(3650, value))
+
+    async def set_trash_retention_days(self, days: int) -> int:
+        normalized = max(1, min(3650, int(days)))
+        conn = await self._ensure_conn()
+        async with self._write_lock:
+            await conn.execute(
+                """
+                INSERT INTO media_settings(key, value, updated_at)
+                VALUES('trash_retention_days', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (str(normalized), now_ts()),
+            )
+            await conn.commit()
+        return normalized
+
+    def _next_trash_path(self, record: MediaRecord) -> Path:
+        day_bucket = time.strftime("%Y%m%d")
+        safe_name = sanitize_filename(record.filename, fallback=f"media_{record.id}")
+        parent = ensure_dir(self.trash_root / day_bucket)
+        return unique_path(parent / f"{record.id}_{safe_name}")
 
     async def _insert_record(
         self,
@@ -280,6 +625,71 @@ class MediaManager:
             duration=duration_value,
         )
 
+    async def _insert_trash_record(
+        self,
+        record: MediaRecord,
+        *,
+        trash_rel_path: str,
+        conn: aiosqlite.Connection | None = None,
+        commit: bool = True,
+    ) -> TrashRecord:
+        if conn is None:
+            conn = await self._ensure_conn()
+        tags_json = json.dumps(record.tags or [], ensure_ascii=False)
+        deleted_at = now_ts()
+        cursor = await conn.execute(
+            """
+            INSERT INTO media_trash (
+                original_media_id, category, filename, original_rel_path, trash_rel_path,
+                kind, mime, size, sha256, source_url, sender_id, description,
+                tags, created_at, updated_at, deleted_at, duration
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(record.id),
+                record.category,
+                record.filename,
+                record.rel_path,
+                trash_rel_path,
+                record.kind,
+                record.mime,
+                int(record.size),
+                record.sha256,
+                record.source_url,
+                record.sender_id,
+                record.description,
+                tags_json,
+                float(record.created_at),
+                float(record.updated_at),
+                deleted_at,
+                float(record.duration or 0.0),
+            ),
+        )
+        if commit:
+            await conn.commit()
+        trash_id = int(cursor.lastrowid)
+        return TrashRecord(
+            id=trash_id,
+            original_media_id=int(record.id),
+            category=record.category,
+            filename=record.filename,
+            original_rel_path=record.rel_path,
+            trash_rel_path=trash_rel_path,
+            abs_path=str((self.trash_root / trash_rel_path).resolve()) if trash_rel_path else "",
+            kind=record.kind,
+            mime=record.mime,
+            size=record.size,
+            sha256=record.sha256,
+            source_url=record.source_url,
+            sender_id=record.sender_id,
+            description=record.description,
+            tags=record.tags or [],
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            deleted_at=deleted_at,
+            duration=record.duration,
+        )
+
     async def get_by_id(self, media_id: int) -> MediaRecord | None:
         conn = await self._ensure_conn()
         cursor = await conn.execute("SELECT * FROM media WHERE id = ?", (int(media_id),))
@@ -299,6 +709,30 @@ class MediaManager:
             return None
         return self._row_to_record(row)
 
+    def _build_query_where(
+        self, query: str
+    ) -> tuple[list[str], list[Any], bool]:
+        """把搜索关键词转成 WHERE 子句片段。
+
+        返回 ``(conditions, params, use_fts)``：
+        - ``use_fts=True`` 代表走 FTS5 的 MATCH（需要与 media_fts 表 JOIN）；
+        - 否则退回到 LIKE 四列模糊匹配。
+        """
+        text = query.strip()
+        if not text:
+            return [], [], False
+        fts_match: str | None = None
+        if self._fts_enabled:
+            fts_match = self._fts_build_match(text)
+        if fts_match is not None:
+            return (["media_fts MATCH ?"], [fts_match], True)
+        wildcard = f"%{self._escape_like(text)}%"
+        cond = (
+            "(media.filename LIKE ? ESCAPE '\\' OR media.description LIKE ? ESCAPE '\\' "
+            "OR media.tags LIKE ? ESCAPE '\\' OR media.category LIKE ? ESCAPE '\\')"
+        )
+        return [cond], [wildcard] * 4, False
+
     async def list_media(
         self,
         *,
@@ -317,23 +751,27 @@ class MediaManager:
         params: list[Any] = []
 
         if category:
-            where_parts.append("category = ?")
+            where_parts.append("media.category = ?")
             params.append(slugify_category(category))
         if kind:
-            where_parts.append("kind = ?")
+            where_parts.append("media.kind = ?")
             params.append(kind.lower())
-        if query.strip():
-            where_parts.append(
-                "(filename LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
-                "OR tags LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')"
-            )
-            wildcard = f"%{self._escape_like(query.strip())}%"
-            params.extend([wildcard, wildcard, wildcard, wildcard])
+
+        query_conditions, query_params, use_fts = self._build_query_where(query)
+        where_parts.extend(query_conditions)
+        params.extend(query_params)
 
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
+        if use_fts:
+            from_sql = "FROM media JOIN media_fts ON media.id = media_fts.rowid"
+            order_sql = "ORDER BY media_fts.rank, media.created_at DESC"
+        else:
+            from_sql = "FROM media"
+            order_sql = "ORDER BY media.created_at DESC"
+
         cursor_total = await conn.execute(
-            f"SELECT COUNT(*) AS total FROM media {where_sql}",
+            f"SELECT COUNT(*) AS total {from_sql} {where_sql}",
             tuple(params),
         )
         total_row = await cursor_total.fetchone()
@@ -341,9 +779,9 @@ class MediaManager:
 
         cursor = await conn.execute(
             f"""
-            SELECT * FROM media
+            SELECT media.* {from_sql}
             {where_sql}
-            ORDER BY created_at DESC
+            {order_sql}
             LIMIT ? OFFSET ?
             """,
             tuple(params + [page_size, offset]),
@@ -371,22 +809,29 @@ class MediaManager:
         if not q:
             return []
         limit = max(1, min(50, int(limit)))
+
+        where_parts: list[str] = []
         params: list[Any] = []
-        where_parts = [
-            "(filename LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' "
-            "OR tags LIKE ? ESCAPE '\\' OR category LIKE ? ESCAPE '\\')"
-        ]
-        wildcard = f"%{self._escape_like(q)}%"
-        params.extend([wildcard, wildcard, wildcard, wildcard])
+        query_conditions, query_params, use_fts = self._build_query_where(q)
+        where_parts.extend(query_conditions)
+        params.extend(query_params)
         if category:
-            where_parts.append("category = ?")
+            where_parts.append("media.category = ?")
             params.append(slugify_category(category))
-        where_sql = f"WHERE {' AND '.join(where_parts)}"
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+
+        if use_fts:
+            from_sql = "FROM media JOIN media_fts ON media.id = media_fts.rowid"
+            order_sql = "ORDER BY media_fts.rank, media.created_at DESC"
+        else:
+            from_sql = "FROM media"
+            order_sql = "ORDER BY media.created_at DESC"
+
         cursor = await conn.execute(
             f"""
-            SELECT * FROM media
+            SELECT media.* {from_sql}
             {where_sql}
-            ORDER BY created_at DESC
+            {order_sql}
             LIMIT ?
             """,
             tuple(params + [limit]),
@@ -498,6 +943,7 @@ class MediaManager:
         source_url: str = "",
         sender_id: str = "",
         tags: list[str] | None = None,
+        duplicate_policy: str = "reuse",
     ) -> MediaRecord:
         source = Path(src_path).expanduser().resolve()
         if not source.exists() or not source.is_file():
@@ -511,18 +957,24 @@ class MediaManager:
 
         source_hash = file_sha256(source)
         should_move = self.default_move_local if move is None else bool(move)
+        policy = str(duplicate_policy or "reuse").strip().lower()
+        if policy not in {"reuse", "force", "error"}:
+            policy = "reuse"
 
         async with self._write_lock:
-            duplicated = await self._get_by_sha256(source_hash)
-            if duplicated:
-                if should_move:
-                    try:
-                        duplicated_path = Path(duplicated.abs_path).resolve()
-                        if source != duplicated_path:
-                            source.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                return duplicated
+            if policy != "force":
+                duplicated = await self._get_by_sha256(source_hash)
+                if duplicated:
+                    if policy == "error":
+                        raise DuplicateMediaError(duplicated)
+                    if should_move:
+                        try:
+                            duplicated_path = Path(duplicated.abs_path).resolve()
+                            if source != duplicated_path:
+                                source.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    return duplicated
 
             normalized_category, target = await self._build_target_path(
                 category,
@@ -564,7 +1016,6 @@ class MediaManager:
                     )
                     await conn.commit()
                     committed = True
-                    return saved
                 except Exception:
                     await conn.rollback()
                     raise
@@ -579,6 +1030,10 @@ class MediaManager:
                         logger.warning("回滚媒体文件失败: %s", rollback_exc)
                 raise
 
+        # 写入成功后再派发衍生任务（解锁 _write_lock 才触发，避免阻塞后续写）
+        self._schedule_derivatives(saved)
+        return saved
+
     async def save_from_url(
         self,
         url: str,
@@ -588,6 +1043,7 @@ class MediaManager:
         filename: str = "",
         sender_id: str = "",
         tags: list[str] | None = None,
+        duplicate_policy: str = "reuse",
     ) -> MediaRecord:
         downloaded = await self.downloader.download_to_temp(url, filename_hint=filename)
         try:
@@ -600,6 +1056,7 @@ class MediaManager:
                 source_url=url,
                 sender_id=sender_id,
                 tags=tags,
+                duplicate_policy=duplicate_policy,
             )
         finally:
             try:
@@ -725,6 +1182,7 @@ class MediaManager:
 
             target_dir = source.parent
             target_path = unique_path(target_dir / cleaned)
+            previous_rel = current.rel_path
 
             conn = await self._ensure_conn()
             try:
@@ -752,6 +1210,14 @@ class MediaManager:
                     logger.warning("回滚媒体改名失败: %s", rollback_exc)
                 raise
 
+        try:
+            self.derivatives.purge_for(previous_rel)
+        except Exception as exc:
+            logger.debug("清理改名前衍生资源失败 %s: %s", previous_rel, exc)
+        refreshed_after_rename = await self.get_by_id(media_id)
+        if refreshed_after_rename is not None:
+            self._schedule_derivatives(refreshed_after_rename)
+
     async def delete_media(self, media_id: int) -> bool:
         async with self._write_lock:
             record = await self.get_by_id(media_id)
@@ -766,13 +1232,261 @@ class MediaManager:
             conn = await self._ensure_conn()
             await conn.execute("DELETE FROM media WHERE id = ?", (int(media_id),))
             await conn.commit()
-            return True
+            purge_rel = record.rel_path
+        try:
+            self.derivatives.purge_for(purge_rel)
+        except Exception as exc:
+            logger.debug("清理衍生资源失败 %s: %s", purge_rel, exc)
+        return True
+
+    async def _get_trash_by_id(self, trash_id: int) -> TrashRecord | None:
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM media_trash WHERE id = ?",
+            (int(trash_id),),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._trash_row_to_record(row)
+
+    async def trash_media(self, media_id: int) -> TrashRecord | None:
+        async with self._write_lock:
+            record = await self.get_by_id(media_id)
+            if not record:
+                return None
+            source = Path(record.abs_path)
+            moved = False
+            target = self._next_trash_path(record)
+            trash_rel_path = ""
+            if source.exists() and source.is_file():
+                ensure_dir(target.parent)
+                shutil.move(str(source), str(target))
+                trash_rel_path = relative_posix(target, self.trash_root)
+                moved = True
+
+            conn = await self._ensure_conn()
+            await self._begin_write_transaction(conn)
+            try:
+                trashed = await self._insert_trash_record(
+                    record,
+                    trash_rel_path=trash_rel_path,
+                    conn=conn,
+                    commit=False,
+                )
+                await conn.execute("DELETE FROM media WHERE id = ?", (int(media_id),))
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                if moved and target.exists() and not source.exists():
+                    try:
+                        ensure_dir(source.parent)
+                        shutil.move(str(target), str(source))
+                    except Exception as rollback_exc:
+                        logger.warning("回滚回收站移动失败: %s", rollback_exc)
+                raise
+            purge_rel = record.rel_path
+        try:
+            self.derivatives.purge_for(purge_rel)
+        except Exception as exc:
+            logger.debug("清理回收前衍生资源失败 %s: %s", purge_rel, exc)
+        return trashed
+
+    async def list_trash(
+        self,
+        *,
+        category: str = "",
+        query: str = "",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        conn = await self._ensure_conn()
+        page = max(1, int(page))
+        page_size = max(1, min(200, int(page_size)))
+        offset = (page - 1) * page_size
+        where_parts: list[str] = []
+        params: list[Any] = []
+        if category:
+            where_parts.append("category = ?")
+            params.append(slugify_category(category))
+        q = query.strip()
+        if q:
+            wildcard = f"%{self._escape_like(q)}%"
+            where_parts.append(
+                "(filename LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\' OR sha256 LIKE ? ESCAPE '\\')"
+            )
+            params.extend([wildcard, wildcard, wildcard])
+        where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
+        cursor_total = await conn.execute(
+            f"SELECT COUNT(*) AS total FROM media_trash {where_sql}",
+            tuple(params),
+        )
+        row_total = await cursor_total.fetchone()
+        total = int(row_total["total"]) if row_total else 0
+        cursor = await conn.execute(
+            f"""
+            SELECT * FROM media_trash
+            {where_sql}
+            ORDER BY deleted_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params + [page_size, offset]),
+        )
+        rows = await cursor.fetchall()
+        items = [self._trash_row_to_record(row).to_dict() for row in rows]
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "items": items,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+        }
+
+    async def restore_from_trash(
+        self,
+        trash_id: int,
+        *,
+        category: str = "",
+        filename: str = "",
+    ) -> MediaRecord:
+        async with self._write_lock:
+            trashed = await self._get_trash_by_id(trash_id)
+            if not trashed:
+                raise ValueError("回收站记录不存在。")
+            if not trashed.trash_rel_path:
+                raise FileNotFoundError("回收站源文件路径缺失，无法恢复。")
+            source = (self.trash_root / trashed.trash_rel_path).resolve()
+            if not source.exists() or not source.is_file():
+                raise FileNotFoundError("回收站文件已不存在。")
+            normalized_category, target = await self._build_target_path(
+                category or trashed.category,
+                filename_hint=filename or trashed.filename,
+                source_path=source,
+            )
+            conn = await self._ensure_conn()
+            moved = False
+            try:
+                shutil.move(str(source), str(target))
+                moved = True
+                rel_path = relative_posix(target, self.media_root)
+                await self._begin_write_transaction(conn)
+                try:
+                    restored = await self._insert_record(
+                        category=normalized_category,
+                        filename=target.name,
+                        rel_path=rel_path,
+                        kind=trashed.kind,
+                        mime=trashed.mime,
+                        size=target.stat().st_size,
+                        sha256=trashed.sha256,
+                        source_url=trashed.source_url,
+                        sender_id=trashed.sender_id,
+                        description=trashed.description,
+                        tags=trashed.tags,
+                        duration=trashed.duration,
+                        conn=conn,
+                        commit=False,
+                    )
+                    await conn.execute(
+                        "DELETE FROM media_trash WHERE id = ?",
+                        (int(trash_id),),
+                    )
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
+            except Exception:
+                if moved and target.exists() and not source.exists():
+                    try:
+                        ensure_dir(source.parent)
+                        shutil.move(str(target), str(source))
+                    except Exception as rollback_exc:
+                        logger.warning("回滚回收站恢复失败: %s", rollback_exc)
+                raise
+        self._schedule_derivatives(restored)
+        return restored
+
+    async def purge_trash(self, trash_id: int) -> bool:
+        async with self._write_lock:
+            trashed = await self._get_trash_by_id(trash_id)
+            if not trashed:
+                return False
+            if trashed.trash_rel_path:
+                target = (self.trash_root / trashed.trash_rel_path).resolve()
+                if target.exists() and target.is_file():
+                    try:
+                        target.unlink(missing_ok=True)
+                    except Exception as exc:
+                        logger.warning("删除回收站文件失败: %s", exc)
+            conn = await self._ensure_conn()
+            await conn.execute("DELETE FROM media_trash WHERE id = ?", (int(trash_id),))
+            await conn.commit()
+        return True
+
+    async def purge_expired_trash(self, *, retention_days: int | None = None) -> dict[str, int]:
+        days = (
+            await self.get_trash_retention_days()
+            if retention_days is None
+            else max(1, min(3650, int(retention_days)))
+        )
+        cutoff = now_ts() - float(days) * 86400.0
+        async with self._write_lock:
+            conn = await self._ensure_conn()
+            cursor = await conn.execute(
+                "SELECT id, trash_rel_path FROM media_trash WHERE deleted_at <= ?",
+                (cutoff,),
+            )
+            rows = await cursor.fetchall()
+            purged = 0
+            for row in rows:
+                trash_rel = str(row["trash_rel_path"] or "")
+                if trash_rel:
+                    target = (self.trash_root / trash_rel).resolve()
+                    if target.exists() and target.is_file():
+                        try:
+                            target.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                await conn.execute(
+                    "DELETE FROM media_trash WHERE id = ?",
+                    (int(row["id"]),),
+                )
+                purged += 1
+            if purged:
+                await conn.commit()
+        return {"purged": purged}
+
+    async def get_trash_stats(self) -> dict[str, Any]:
+        conn = await self._ensure_conn()
+        retention_days = await self.get_trash_retention_days()
+        cutoff = now_ts() - float(retention_days) * 86400.0
+        cursor_total = await conn.execute(
+            "SELECT COUNT(*) AS total_count, COALESCE(SUM(size), 0) AS total_size FROM media_trash"
+        )
+        total_row = await cursor_total.fetchone()
+        total_count = int(total_row["total_count"]) if total_row else 0
+        total_size = int(total_row["total_size"]) if total_row else 0
+        cursor_expired = await conn.execute(
+            "SELECT COUNT(*) AS cnt FROM media_trash WHERE deleted_at <= ?",
+            (cutoff,),
+        )
+        expired_row = await cursor_expired.fetchone()
+        expired_count = int(expired_row["cnt"]) if expired_row else 0
+        return {
+            "total_count": total_count,
+            "total_size": total_size,
+            "total_size_human": format_size(total_size),
+            "expired_count": expired_count,
+            "retention_days": retention_days,
+        }
 
     async def move_media(self, media_id: int, new_category: str) -> MediaRecord:
         async with self._write_lock:
             record = await self.get_by_id(media_id)
             if not record:
                 raise ValueError("媒体不存在。")
+            previous_rel = record.rel_path
             source = Path(record.abs_path)
             if not source.exists():
                 raise FileNotFoundError("媒体文件已不存在。")
@@ -816,7 +1530,14 @@ class MediaManager:
             refreshed = await self.get_by_id(media_id)
             if refreshed is None:
                 raise RuntimeError("移动后的记录意外丢失。")
-            return refreshed
+
+        # 旧位置的缩略图/海报/波形失效，清理后让新分类按需再生成
+        try:
+            self.derivatives.purge_for(previous_rel)
+        except Exception as exc:
+            logger.debug("清理旧分类衍生资源失败 %s: %s", previous_rel, exc)
+        self._schedule_derivatives(refreshed)
+        return refreshed
 
     async def create_category(self, category: str, description: str = "") -> str:
         normalized = self.category_manager.ensure_category(category, description=description)
@@ -872,6 +1593,10 @@ class MediaManager:
                 except Exception:
                     await conn.rollback()
                     raise
+                try:
+                    self.derivatives.purge_for_category(old_normalized)
+                except Exception as exc:
+                    logger.debug("清理旧分类衍生资源失败 %s: %s", old_normalized, exc)
                 return True, new_normalized
             except ValueError as exc:
                 try:
@@ -900,49 +1625,55 @@ class MediaManager:
 
     async def delete_category(self, category: str, *, remove_files: bool = True) -> dict[str, Any]:
         normalized = slugify_category(category)
-        async with self._write_lock:
-            conn = await self._ensure_conn()
-            cursor = await conn.execute(
-                "SELECT id, rel_path FROM media WHERE category = ?",
-                (normalized,),
-            )
-            rows = await cursor.fetchall()
-            deleted_files = 0
-            if remove_files:
-                for row in rows:
-                    rel = str(row["rel_path"])
-                    file_path = (self.media_root / rel).resolve()
-                    if file_path.exists() and file_path.is_file():
-                        try:
-                            file_path.unlink()
-                            deleted_files += 1
-                        except Exception:
-                            pass
-            await conn.execute("DELETE FROM media WHERE category = ?", (normalized,))
-            await conn.commit()
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT id FROM media WHERE category = ?",
+            (normalized,),
+        )
+        rows = await cursor.fetchall()
+        deleted_rows = 0
+        deleted_files = 0
 
-            category_dir = self.media_root / normalized
-            if category_dir.exists():
-                try:
-                    if remove_files:
-                        shutil.rmtree(category_dir)
-                    else:
-                        # remove_files=False 时只允许清理空目录，避免误伤用户仍想保留的文件
-                        try:
-                            category_dir.rmdir()
-                        except OSError:
-                            logger.info(
-                                "分类目录 %s 非空且 remove_files=False，保留物理文件。",
-                                category_dir,
-                            )
-                except Exception as exc:
-                    logger.warning("删除分类目录失败: %s", exc)
-            self.category_manager.delete_category(normalized)
-            return {
-                "category": normalized,
-                "deleted_files": deleted_files,
-                "deleted_rows": len(rows),
-            }
+        if remove_files:
+            for row in rows:
+                trashed = await self.trash_media(int(row["id"]))
+                if not trashed:
+                    continue
+                deleted_rows += 1
+                if trashed.trash_rel_path:
+                    deleted_files += 1
+        else:
+            async with self._write_lock:
+                conn = await self._ensure_conn()
+                cursor = await conn.execute(
+                    "SELECT id FROM media WHERE category = ?",
+                    (normalized,),
+                )
+                keep_rows = await cursor.fetchall()
+                await conn.execute("DELETE FROM media WHERE category = ?", (normalized,))
+                await conn.commit()
+                deleted_rows = len(keep_rows)
+
+        try:
+            self.derivatives.purge_for_category(normalized)
+        except Exception as exc:
+            logger.debug("清理分类衍生资源失败 %s: %s", normalized, exc)
+
+        category_dir = self.media_root / normalized
+        if category_dir.exists():
+            try:
+                # 软删除后通常目录为空；若存在额外文件则保留，避免误删用户数据。
+                category_dir.rmdir()
+            except OSError:
+                pass
+            except Exception as exc:
+                logger.warning("删除分类目录失败: %s", exc)
+        self.category_manager.delete_category(normalized)
+        return {
+            "category": normalized,
+            "deleted_files": deleted_files,
+            "deleted_rows": deleted_rows,
+        }
 
     async def ensure_scanned(self) -> dict[str, int]:
         """扫描媒体目录并修复索引，同步清理孤儿分类元数据。
@@ -975,6 +1706,7 @@ class MediaManager:
             indexed = 0
             skipped = 0
             duration_filled = 0
+            scheduled_scan: list[MediaRecord] = []
             try:
                 category_dirs = list(self.media_root.iterdir())
             except OSError as exc:
@@ -1007,7 +1739,7 @@ class MediaManager:
                             continue
                         sha256 = file_sha256(file_path)
                         duration_value = self._probe_duration_for_kind(file_path, kind)
-                        await self._insert_record(
+                        scanned_record = await self._insert_record(
                             category=category,
                             filename=file_path.name,
                             rel_path=rel,
@@ -1020,6 +1752,8 @@ class MediaManager:
                             duration=duration_value,
                         )
                         indexed += 1
+                        if kind in {"image", "video", "audio"}:
+                            scheduled_scan.append(scanned_record)
                     except OSError as exc:
                         logger.warning("扫描文件失败 %s: %s", file_path, exc)
                         skipped += 1
@@ -1048,13 +1782,21 @@ class MediaManager:
             if removed:
                 await conn.commit()
             pruned_categories = self.category_manager.prune_missing_folders()
-            return {
-                "indexed": indexed,
-                "removed": removed,
-                "skipped": skipped,
-                "pruned_categories": len(pruned_categories),
-                "duration_filled": duration_filled,
-            }
+            for rel in stale:
+                try:
+                    self.derivatives.purge_for(rel)
+                except Exception:
+                    pass
+        # _write_lock 释放后再安排后台生成；避免长时间占用写锁
+        for record in scheduled_scan:
+            self._schedule_derivatives(record)
+        return {
+            "indexed": indexed,
+            "removed": removed,
+            "skipped": skipped,
+            "pruned_categories": len(pruned_categories),
+            "duration_filled": duration_filled,
+        }
 
     async def prune_empty_categories(
         self, *, protected: set[str] | None = None
@@ -1100,6 +1842,72 @@ class MediaManager:
             "removed": removed,
             "removed_count": len(removed),
             "folder_cleaned": folder_cleaned,
+        }
+
+    async def list_duplicate_groups(
+        self,
+        *,
+        mode: str = "exact",
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        _ = mode
+        conn = await self._ensure_conn()
+        normalized_mode = "exact"
+        page = max(1, int(page))
+        page_size = max(1, min(100, int(page_size)))
+        offset = (page - 1) * page_size
+
+        groups: list[dict[str, Any]] = []
+        total = 0
+
+        cursor_total = await conn.execute(
+            "SELECT COUNT(*) AS total FROM (SELECT sha256 FROM media GROUP BY sha256 HAVING COUNT(*) > 1)"
+        )
+        row_total = await cursor_total.fetchone()
+        total = int(row_total["total"]) if row_total else 0
+
+        cursor_groups = await conn.execute(
+            """
+            SELECT
+                sha256,
+                COUNT(*) AS cnt,
+                MAX(created_at) AS latest
+            FROM media
+            GROUP BY sha256
+            HAVING COUNT(*) > 1
+            ORDER BY cnt DESC, latest DESC
+            LIMIT ? OFFSET ?
+            """,
+            (page_size, offset),
+        )
+        group_rows = await cursor_groups.fetchall()
+        for row in group_rows:
+            sha = str(row["sha256"])
+            cursor_items = await conn.execute(
+                "SELECT * FROM media WHERE sha256 = ? ORDER BY created_at DESC, id DESC",
+                (sha,),
+            )
+            item_rows = await cursor_items.fetchall()
+            items = [self._row_to_record(item).to_dict() for item in item_rows]
+            groups.append(
+                {
+                    "group_key": f"sha:{sha}",
+                    "reason": "sha256",
+                    "confidence": "exact",
+                    "count": int(row["cnt"]),
+                    "items": items,
+                }
+            )
+
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "items": groups,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages,
+            "mode": normalized_mode,
         }
 
     async def get_stats(self) -> dict[str, Any]:

@@ -124,7 +124,8 @@ except Exception:  # pragma: no cover
         return []
 
 from ..core.category_manager import CategoryManager
-from ..core.media_manager import MediaManager, MediaRecord
+from ..core.derivatives import DerivativesManager
+from ..core.media_manager import DuplicateMediaError, MediaManager, MediaRecord
 from ..core.utils import (
     detect_mime_and_kind,
     generate_password,
@@ -193,11 +194,18 @@ class WebUIServer:
         self.config = config
         self.data_root = data_root.resolve()
         self.media_root = self.media_manager.media_root
-        self.thumbnail_dir = (self.media_manager.plugin_data_dir / "thumbnails").resolve()
-        try:
-            self.thumbnail_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:  # pragma: no cover
-            logger.warning("创建缩略图目录失败: %s", exc)
+        # 缩略图目录转由 DerivativesManager 管辖（plugin_data/derivatives/thumbnails）。
+        # 单测里 media_manager 可能是 mock，不自带 derivatives，这里做一次兜底构造。
+        self._derivatives = getattr(self.media_manager, "derivatives", None)
+        if self._derivatives is None:
+            plugin_dir = getattr(
+                self.media_manager, "plugin_data_dir", None
+            ) or (self.media_root.parent / "plugin_data")
+            self._derivatives = DerivativesManager(
+                media_root=self.media_root,
+                plugin_data_dir=Path(plugin_dir),
+            )
+        self.thumbnail_dir = self._derivatives.thumbnail_dir
 
         self.host = str(config.get("host", "0.0.0.0") or "0.0.0.0")
         self.port = self._safe_int(config.get("port", 7003) or 7003, 7003, minimum=1)
@@ -261,6 +269,22 @@ class WebUIServer:
     @property
     def password_generated(self) -> bool:
         return self._password_generated
+
+    async def _get_trash_retention_days(self) -> int:
+        getter = getattr(self.media_manager, "get_trash_retention_days", None)
+        if callable(getter):
+            try:
+                return max(1, int(await getter()))
+            except Exception:
+                return 30
+        return 30
+
+    async def _set_trash_retention_days(self, days: int) -> int:
+        setter = getattr(self.media_manager, "set_trash_retention_days", None)
+        normalized = max(1, min(3650, int(days)))
+        if callable(setter):
+            return max(1, int(await setter(normalized)))
+        return normalized
 
     def _capability_secret_path(self) -> Path:
         return (self.media_manager.plugin_data_dir / self.CAPABILITY_SECRET_FILENAME).resolve()
@@ -550,6 +574,13 @@ class WebUIServer:
                     self._cleanup_tokens_locked()
                 async with self._attempt_lock:
                     self._cleanup_attempts_locked()
+                purge = getattr(self.media_manager, "purge_expired_trash", None)
+                if callable(purge):
+                    retention_days = await self._get_trash_retention_days()
+                    try:
+                        await purge(retention_days=retention_days)
+                    except TypeError:
+                        await purge()
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -663,31 +694,23 @@ class WebUIServer:
         return safe_join(self.data_root, normalized)
 
     def _thumbnail_target(self, source: Path, size: int) -> Path:
+        """兼容旧调用：把磁盘路径换算成衍生缩略图缓存位置。"""
         rel = source.resolve().relative_to(self.media_root).as_posix()
-        return self.thumbnail_dir / str(size) / f"{rel}.webp"
-
-    def _ensure_thumbnail_sync(self, source: Path, size: int) -> Path:
-        target = self._thumbnail_target(source, size)
-        try:
-            if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
-                return target
-        except Exception:
-            pass
-        target.parent.mkdir(parents=True, exist_ok=True)
-        from PIL import Image, ImageOps
-
-        with Image.open(source) as img:
-            img = ImageOps.exif_transpose(img)
-            img.thumbnail((size, size), Image.LANCZOS)
-            if img.mode not in ("RGB", "RGBA"):
-                img = img.convert("RGBA") if "A" in img.mode else img.convert("RGB")
-            tmp_target = target.with_suffix(target.suffix + ".part")
-            img.save(tmp_target, "WEBP", quality=78, method=4)
-        tmp_target.replace(target)
-        return target
+        return self._derivatives.thumbnail_path(rel, size)
 
     async def _ensure_thumbnail(self, source: Path, size: int) -> Path:
-        return await asyncio.to_thread(self._ensure_thumbnail_sync, source, size)
+        """保留历史签名（图片）；内部委托 DerivativesManager 完成生成。"""
+        rel = source.resolve().relative_to(self.media_root).as_posix()
+        target = await self._derivatives.ensure_thumbnail(rel, size, kind="image")
+        if target is None:
+            raise RuntimeError(f"生成缩略图失败: {rel}")
+        return target
+
+    async def _ensure_thumbnail_for_record(
+        self, source: Path, size: int, *, kind: str
+    ) -> Path | None:
+        rel = source.resolve().relative_to(self.media_root).as_posix()
+        return await self._derivatives.ensure_thumbnail(rel, size, kind=kind)
 
     def _build_data_item(self, path: Path) -> dict[str, Any]:
         try:
@@ -728,6 +751,11 @@ class WebUIServer:
         categories_file = getattr(self.category_manager, "categories_file", None)
         db_path: Path = getattr(self.media_manager, "db_path", self.media_manager.plugin_data_dir / "index.db")
         media_root: Path = self.media_root
+        trash_root: Path = getattr(
+            self.media_manager,
+            "trash_root",
+            self.media_manager.plugin_data_dir / "trash",
+        )
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
         suffix = "full" if include_media else "meta"
@@ -757,6 +785,9 @@ class WebUIServer:
                         manifest["has_categories"] = True
                     if include_media and media_root and media_root.exists() and media_root.is_dir():
                         tar.add(media_root, arcname="media")
+                    if include_media and trash_root and trash_root.exists() and trash_root.is_dir():
+                        tar.add(trash_root, arcname="trash")
+                        manifest["has_trash"] = True
 
                     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
                     info = tarfile.TarInfo(name="manifest.json")
@@ -856,11 +887,12 @@ class WebUIServer:
             has_db = (extracted_root / "index.db").exists()
             has_categories = (extracted_root / "categories.json").exists()
             has_media_dir = (extracted_root / "media").exists() and (extracted_root / "media").is_dir()
+            has_trash_dir = (extracted_root / "trash").exists() and (extracted_root / "trash").is_dir()
 
-            if not (has_db or has_categories or has_media_dir):
+            if not (has_db or has_categories or has_media_dir or has_trash_dir):
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
-                    detail="归档中未包含 index.db / categories.json / media，无法恢复",
+                    detail="归档中未包含 index.db / categories.json / media / trash，无法恢复",
                 )
 
             try:
@@ -898,6 +930,25 @@ class WebUIServer:
                     target_media.mkdir(parents=True, exist_ok=True)
                     _copy_tree_overlay(extracted_root / "media", target_media)
                     restored.append("media/")
+                if has_trash_dir:
+                    target_trash = getattr(
+                        self.media_manager,
+                        "trash_root",
+                        self.media_manager.plugin_data_dir / "trash",
+                    )
+                    target_trash = Path(target_trash)
+                    if replace_media and target_trash.exists():
+                        for child in target_trash.iterdir():
+                            try:
+                                if child.is_dir():
+                                    shutil.rmtree(child, ignore_errors=True)
+                                else:
+                                    child.unlink(missing_ok=True)
+                            except Exception as exc:
+                                logger.warning("清理旧回收站目录项失败: %s (%s)", child, exc)
+                    target_trash.mkdir(parents=True, exist_ok=True)
+                    _copy_tree_overlay(extracted_root / "trash", target_trash)
+                    restored.append("trash/")
             finally:
                 try:
                     await self.media_manager.initialize()
@@ -1028,6 +1079,7 @@ class WebUIServer:
             _ = token
             max_bytes = int(getattr(self.media_manager, "max_file_size", 0) or 0)
             max_mb = max_bytes // (1024 * 1024) if max_bytes > 0 else 0
+            trash_retention_days = await self._get_trash_retention_days()
             media_token = self._issue_capability_token(
                 "media", "*", self.readonly_token_ttl
             )
@@ -1050,7 +1102,36 @@ class WebUIServer:
                 "password_generated": self._password_generated,
                 "max_file_size_mb": max_mb,
                 "max_file_size_bytes": max_bytes,
+                "trash_retention_days": trash_retention_days,
             }
+
+        @self._app.get("/api/settings/trash")
+        async def get_trash_settings(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            return {"trash_retention_days": await self._get_trash_retention_days()}
+
+        @self._app.patch("/api/settings/trash")
+        async def patch_trash_settings(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            days = payload.get("trash_retention_days")
+            if days is None:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="trash_retention_days 不能为空",
+                )
+            try:
+                normalized = await self._set_trash_retention_days(int(days))
+            except Exception as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail=f"trash_retention_days 无效: {exc}",
+                ) from exc
+            return {"trash_retention_days": normalized}
 
         @self._app.get("/api/stats")
         async def stats(token: str = Depends(self._auth_dependency())) -> dict[str, Any]:
@@ -1129,6 +1210,30 @@ class WebUIServer:
                 page_size=page_size,
             )
 
+        @self._app.get("/api/media/duplicates")
+        async def list_duplicate_media(
+            mode: str = "exact",
+            page: int = 1,
+            page_size: int = 20,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            list_duplicates = getattr(self.media_manager, "list_duplicate_groups", None)
+            if not callable(list_duplicates):
+                return {
+                    "items": [],
+                    "total": 0,
+                    "page": max(1, int(page)),
+                    "page_size": max(1, int(page_size)),
+                    "total_pages": 0,
+                    "mode": mode,
+                }
+            return await list_duplicates(
+                mode=mode,
+                page=page,
+                page_size=page_size,
+            )
+
         @self._app.get("/api/media/{media_id}")
         async def get_media(
             media_id: int, token: str = Depends(self._auth_dependency())
@@ -1164,10 +1269,120 @@ class WebUIServer:
             media_id: int, token: str = Depends(self._auth_dependency())
         ) -> dict[str, Any]:
             _ = token
+            trash_media = getattr(self.media_manager, "trash_media", None)
+            if callable(trash_media):
+                trashed = await trash_media(media_id)
+                if not trashed:
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, detail="媒体不存在")
+                return {"deleted": True, "soft_deleted": True, "trash_id": trashed.id}
             ok = await self.media_manager.delete_media(media_id)
             if not ok:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail="媒体不存在")
             return {"deleted": True}
+
+        @self._app.get("/api/trash")
+        async def list_trash(
+            category: str = "",
+            query: str = "",
+            page: int = 1,
+            page_size: int = 20,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            list_trash_fn = getattr(self.media_manager, "list_trash", None)
+            if not callable(list_trash_fn):
+                return {
+                    "items": [],
+                    "total": 0,
+                    "page": max(1, int(page)),
+                    "page_size": max(1, int(page_size)),
+                    "total_pages": 0,
+                }
+            data = await list_trash_fn(
+                category=category,
+                query=query,
+                page=page,
+                page_size=page_size,
+            )
+            retention_days = await self._get_trash_retention_days()
+            now = time.time()
+            for item in data.get("items", []):
+                try:
+                    deleted_at = float(item.get("deleted_at") or 0)
+                except (TypeError, ValueError):
+                    deleted_at = 0.0
+                expires_at = deleted_at + float(retention_days) * 86400.0 if deleted_at else 0.0
+                item["expires_at"] = expires_at
+                item["remaining_days"] = (
+                    max(0, int((expires_at - now) // 86400)) if expires_at else 0
+                )
+            return data
+
+        @self._app.get("/api/trash/stats")
+        async def trash_stats(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            stats_fn = getattr(self.media_manager, "get_trash_stats", None)
+            if not callable(stats_fn):
+                return {
+                    "total_count": 0,
+                    "total_size": 0,
+                    "total_size_human": "0B",
+                    "expired_count": 0,
+                    "retention_days": await self._get_trash_retention_days(),
+                }
+            return await stats_fn()
+
+        @self._app.post("/api/trash/{trash_id}/restore")
+        async def restore_trash_media(
+            trash_id: int,
+            payload: dict[str, Any] | None = None,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            restore_fn = getattr(self.media_manager, "restore_from_trash", None)
+            if not callable(restore_fn):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="当前后端不支持回收站恢复")
+            body = payload or {}
+            try:
+                restored = await restore_fn(
+                    trash_id,
+                    category=str(body.get("category", "") or ""),
+                    filename=str(body.get("filename", "") or ""),
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+            data = restored.to_dict()
+            data["public_url"] = self.build_media_url(restored)
+            return data
+
+        @self._app.delete("/api/trash/{trash_id}")
+        async def purge_trash_media(
+            trash_id: int,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            purge_fn = getattr(self.media_manager, "purge_trash", None)
+            if not callable(purge_fn):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="当前后端不支持回收站删除")
+            ok = await purge_fn(trash_id)
+            if not ok:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="回收站记录不存在")
+            return {"deleted": True}
+
+        @self._app.post("/api/trash/purge-expired")
+        async def purge_expired_trash(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            purge_fn = getattr(self.media_manager, "purge_expired_trash", None)
+            if not callable(purge_fn):
+                return {"purged": 0}
+            retention_days = await self._get_trash_retention_days()
+            return await purge_fn(retention_days=retention_days)
 
         @self._app.post("/api/media/save-url")
         async def save_media_by_url(
@@ -1180,12 +1395,34 @@ class WebUIServer:
             category = str(payload.get("category", "default") or "default")
             description = str(payload.get("description", "") or "")
             filename = str(payload.get("filename", "") or "")
-            record = await self.media_manager.save_from_url(
-                url,
-                category=category,
-                description=description,
-                filename=filename,
-            )
+            duplicate_policy = str(payload.get("duplicate_policy", "error") or "error")
+            try:
+                try:
+                    record = await self.media_manager.save_from_url(
+                        url,
+                        category=category,
+                        description=description,
+                        filename=filename,
+                        duplicate_policy=duplicate_policy,
+                    )
+                except TypeError:
+                    record = await self.media_manager.save_from_url(
+                        url,
+                        category=category,
+                        description=description,
+                        filename=filename,
+                    )
+            except DuplicateMediaError as exc:
+                existing = exc.record.to_dict()
+                existing["public_url"] = self.build_media_url(exc.record)
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "duplicate_sha256",
+                        "message": "检测到重复文件",
+                        "existing": existing,
+                    },
+                ) from exc
             data = record.to_dict()
             data["public_url"] = self.build_media_url(record)
             return data
@@ -1194,6 +1431,7 @@ class WebUIServer:
         async def upload_media(
             category: str = Form("default"),
             description: str = Form(""),
+            duplicate_policy: str = Form("error"),
             files: list[UploadFile] = File(default=[]),
             token: str = Depends(self._auth_dependency()),
         ) -> dict[str, Any]:
@@ -1203,6 +1441,7 @@ class WebUIServer:
 
             saved: list[dict[str, Any]] = []
             errors: list[str] = []
+            duplicates: list[dict[str, Any]] = []
             for upload in files:
                 temp_name = unique_path(
                     self.media_manager.downloader.temp_dir
@@ -1219,22 +1458,43 @@ class WebUIServer:
                             if size > self.media_manager.max_file_size:
                                 raise ValueError("文件体积超过上限")
                             await fp.write(chunk)
-                    record = await self.media_manager.save_from_local_path(
-                        str(temp_name),
-                        category=category,
-                        description=description,
-                        filename=upload.filename or temp_name.name,
-                        move=True,
-                    )
+                    try:
+                        record = await self.media_manager.save_from_local_path(
+                            str(temp_name),
+                            category=category,
+                            description=description,
+                            filename=upload.filename or temp_name.name,
+                            move=True,
+                            duplicate_policy=duplicate_policy,
+                        )
+                    except TypeError:
+                        record = await self.media_manager.save_from_local_path(
+                            str(temp_name),
+                            category=category,
+                            description=description,
+                            filename=upload.filename or temp_name.name,
+                            move=True,
+                        )
                     item = record.to_dict()
                     item["public_url"] = self.build_media_url(record)
                     saved.append(item)
+                except DuplicateMediaError as exc:
+                    existing = exc.record.to_dict()
+                    existing["public_url"] = self.build_media_url(exc.record)
+                    duplicates.append(
+                        {
+                            "name": upload.filename or temp_name.name,
+                            "code": "duplicate_sha256",
+                            "existing": existing,
+                        }
+                    )
+                    temp_name.unlink(missing_ok=True)
                 except Exception as exc:
                     errors.append(f"{upload.filename or temp_name.name}: {exc}")
                     temp_name.unlink(missing_ok=True)
                 finally:
                     await upload.close()
-            return {"saved": saved, "errors": errors}
+            return {"saved": saved, "errors": errors, "duplicates": duplicates}
 
         @self._app.get("/files/{category}/{filename:path}")
         async def serve_media_file(category: str, filename: str, request: Request):
@@ -1259,6 +1519,7 @@ class WebUIServer:
             request: Request,
             size: int = 480,
         ):
+            # 默认预生成尺寸为 480；其它值允许传入，会现场生成后缓存。
             safe_size = max(96, min(1024, int(size or 480)))
             try:
                 source = safe_join(self.media_root, category, filename)
@@ -1270,14 +1531,22 @@ class WebUIServer:
             if not source.exists() or not source.is_file():
                 raise HTTPException(status.HTTP_404_NOT_FOUND, detail="文件不存在")
             mime, kind = detect_mime_and_kind(source)
-            if kind != "image" or source.suffix.lower() == ".svg":
+            if kind == "image" and source.suffix.lower() == ".svg":
+                # SVG 矢量图不做光栅化，直接回源
+                response = FileResponse(path=source, media_type=mime or None)
+                response.headers["Accept-Ranges"] = "bytes"
+                return response
+            if kind != "image":
+                # 仅图片生成缩略图；其它类型直接回源（前端会基于类型决定展示方式）。
                 response = FileResponse(path=source, media_type=mime or None)
                 response.headers["Accept-Ranges"] = "bytes"
                 return response
             try:
-                target = await self._ensure_thumbnail(source, safe_size)
+                target = await self._ensure_thumbnail_for_record(source, safe_size, kind=kind)
             except Exception as exc:
-                logger.debug("缩略图生成失败，回退原图: %s", exc)
+                logger.debug("缩略图生成失败: %s", exc)
+                target = None
+            if target is None or not target.exists():
                 return FileResponse(path=source, media_type=mime or None)
             response = FileResponse(path=target, media_type="image/webp")
             response.headers["Cache-Control"] = "public, max-age=86400"

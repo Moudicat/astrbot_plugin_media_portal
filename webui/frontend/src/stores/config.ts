@@ -10,6 +10,7 @@ function defaultConfig(): PortalConfig {
     expose_astrbot_data: true,
     max_file_size_mb: 500,
     max_file_size_bytes: 500 * 1024 * 1024,
+    trash_retention_days: 30,
   };
 }
 
@@ -23,6 +24,7 @@ export const useConfigStore = defineStore("config", {
     maxBytes: (state): number =>
       state.config.max_file_size_bytes || (state.config.max_file_size_mb || 500) * 1024 * 1024,
     publicBaseUrl: (state): string => state.config.public_base_url || "",
+    trashRetentionDays: (state): number => Number(state.config.trash_retention_days || 30) || 30,
   },
   actions: {
     async fetch() {
@@ -32,11 +34,13 @@ export const useConfigStore = defineStore("config", {
         Number(data.max_file_size_bytes) > 0
           ? Number(data.max_file_size_bytes)
           : maxMb * 1024 * 1024;
+      const retentionDays = Number(data.trash_retention_days) > 0 ? Number(data.trash_retention_days) : 30;
       this.config = {
         ...this.config,
         ...data,
         max_file_size_mb: maxMb,
         max_file_size_bytes: maxBytes,
+        trash_retention_days: retentionDays,
       };
 
       // /api/config 也会返回 readonly_token / data_token（供生成直链使用）

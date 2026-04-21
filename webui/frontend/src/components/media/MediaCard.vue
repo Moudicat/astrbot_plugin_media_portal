@@ -1,5 +1,10 @@
 <template>
-  <article class="media-card" :class="{ selected }" @contextmenu.prevent="onContext">
+  <article
+    class="media-card"
+    :class="{ selected }"
+    :data-kind="item.kind || 'file'"
+    @contextmenu.prevent="onContext"
+  >
     <div class="media-preview" @click="$emit('preview', item)">
       <img
         v-if="item.kind === 'image'"
@@ -100,7 +105,7 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import { buildMediaDirectUrl, buildThumbUrl } from "@/utils/url";
-import { formatDateShort, formatDuration } from "@/utils/format";
+import { formatDateTimeShort, formatDuration } from "@/utils/format";
 import { useUiStore } from "@/stores/ui";
 import type { MediaItem } from "@/api/types";
 
@@ -162,7 +167,7 @@ const kindMeta = computed(() => {
 });
 
 const sizeLabel = computed(() => props.item.size_human || `${props.item.size || 0} B`);
-const dateLabel = computed(() => formatDateShort(props.item.created_at));
+const dateLabel = computed(() => formatDateTimeShort(props.item.created_at));
 const durationLabel = computed(() => {
   if (props.item.kind !== "audio" && props.item.kind !== "video") return "";
   return formatDuration(props.item.duration);

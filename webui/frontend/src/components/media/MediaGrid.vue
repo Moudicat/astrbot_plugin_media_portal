@@ -174,6 +174,17 @@
       </div>
     </div>
 
+    <div v-else-if="!items.length && hasActiveFilter" class="empty panel">
+      <div class="illus"><Icon name="search-x" :size="36" /></div>
+      <strong>{{ $t("media.emptyNoResultsTitle") }}</strong>
+      <span>{{ $t("media.emptyNoResultsHint") }}</span>
+      <div style="display: flex; gap: 8px; margin-top: 6px">
+        <button class="sm" type="button" @click="resetFilters">
+          <Icon name="eraser" :size="15" /> {{ $t("media.emptyNoResultsReset") }}
+        </button>
+      </div>
+    </div>
+
     <div v-else-if="!items.length" class="empty panel">
       <div class="illus"><Icon name="package-open" :size="36" /></div>
       <strong>{{ $t("media.emptyTitle") }}</strong>
@@ -269,18 +280,53 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
+const SEARCH_DEBOUNCE_MS = 350;
+
 const localQuery = ref(props.query);
 const pinned = ref(false);
 const teleportReady = ref(false);
 const searchInput = ref<HTMLInputElement | null>(null);
 const inlineSelectionBar = ref<HTMLDivElement | null>(null);
 
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let lastEmittedQuery = props.query ?? "";
+
+function clearSearchTimer() {
+  if (searchTimer !== null) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+}
+
+function emitSearchIfChanged(value: string) {
+  const next = value ?? "";
+  if (next === lastEmittedQuery) return;
+  lastEmittedQuery = next;
+  emit("search", next);
+}
+
 watch(
   () => props.query,
   (value) => {
-    localQuery.value = value;
+    const next = value ?? "";
+    localQuery.value = next;
+    lastEmittedQuery = next;
+    clearSearchTimer();
   },
 );
+
+watch(localQuery, (value) => {
+  const next = value ?? "";
+  if (next === lastEmittedQuery) {
+    clearSearchTimer();
+    return;
+  }
+  clearSearchTimer();
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    emitSearchIfChanged(next);
+  }, SEARCH_DEBOUNCE_MS);
+});
 
 watch(
   () => props.selectedIds,
@@ -308,6 +354,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", updatePinned);
   window.removeEventListener("resize", updatePinned);
+  clearSearchTimer();
 });
 
 function updatePinned() {
@@ -395,15 +442,40 @@ const kindTabs = computed(() => [
 ]);
 
 function submitSearch() {
-  emit("search", localQuery.value);
+  clearSearchTimer();
+  emitSearchIfChanged(localQuery.value ?? "");
   searchInput.value?.blur();
 }
 function clearSearch() {
+  clearSearchTimer();
   localQuery.value = "";
-  emit("search", "");
+  emitSearchIfChanged("");
   searchInput.value?.focus();
 }
 function pickKind(kind: string) {
   emit("change-kind", kind);
+}
+
+const hasActiveFilter = computed(() => {
+  const q = (props.query ?? "").trim();
+  const k = props.kind ?? "";
+  const cat = props.activeCategory ?? "";
+  return !!(q || k || cat);
+});
+
+function resetFilters() {
+  clearSearchTimer();
+  if (localQuery.value) {
+    localQuery.value = "";
+  }
+  if ((props.query ?? "") !== "") {
+    emitSearchIfChanged("");
+  }
+  if ((props.kind ?? "") !== "") {
+    emit("change-kind", "");
+  }
+  if ((props.activeCategory ?? "") !== "") {
+    emit("select-category", "");
+  }
 }
 </script>

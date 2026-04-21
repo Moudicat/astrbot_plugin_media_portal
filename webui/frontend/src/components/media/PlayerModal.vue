@@ -40,21 +40,20 @@
           <Icon name="chevron-left" :size="20" />
         </button>
         <img v-if="item.kind === 'image'" :src="sourceUrl" :alt="displayName" />
-        <video
+        <PlyrMediaPlayer
           v-else-if="item.kind === 'video'"
+          :key="`video:${sourceUrl}`"
+          kind="video"
           :src="sourceUrl"
-          controls
-          playsinline
-          autoplay
-          preload="metadata"
-        ></video>
-        <audio
+          :autoplay="true"
+        />
+        <PlyrMediaPlayer
           v-else-if="item.kind === 'audio'"
+          :key="`audio:${sourceUrl}`"
+          kind="audio"
           :src="sourceUrl"
-          controls
-          autoplay
-          preload="metadata"
-        ></audio>
+          :autoplay="true"
+        />
         <div v-else class="empty">
           <div class="illus"><Icon name="file-question" :size="28" /></div>
           <strong>{{ $t("player.unsupportedTitle") }}</strong>
@@ -77,6 +76,7 @@
 import { computed, onBeforeUnmount, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
+import PlyrMediaPlayer from "./PlyrMediaPlayer.vue";
 import type { MediaItem } from "@/api/types";
 
 interface PlayerItem extends Partial<MediaItem> {

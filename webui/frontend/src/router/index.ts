@@ -26,6 +26,16 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/views/DataBrowserView.vue"),
         meta: { requireData: true },
       },
+      {
+        path: "/trash",
+        name: "trash",
+        component: () => import("@/views/TrashView.vue"),
+      },
+      {
+        path: "/duplicates",
+        name: "duplicates",
+        component: () => import("@/views/DuplicatesView.vue"),
+      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/media" },
