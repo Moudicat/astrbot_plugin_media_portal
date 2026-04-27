@@ -10,7 +10,9 @@
     "closeEsc": "閉じる (Esc)",
     "save": "保存",
     "done": "完了",
-    "loading": "読み込み中…"
+    "loading": "読み込み中…",
+    "copy": "コピー",
+    "copied": "クリップボードにコピーしました"
   },
   "login": {
     "passwordLabel": "アクセスパスワード",
@@ -20,7 +22,16 @@
     "loading": "ログイン中...",
     "submit": "コンソールにログイン",
     "welcome": "Media Portal へようこそ",
-    "loggedOut": "ログアウトしました"
+    "loggedOut": "ログアウトしました",
+    "totpHint": "認証アプリに表示される 6 桁のコードを入力してください",
+    "totpRecoveryHint": "リカバリコードを入力してください（各コードは 1 回のみ使用可能）",
+    "totpCodeLabel": "認証コード",
+    "totpRecoveryLabel": "リカバリコード",
+    "totpRecoveryPlaceholder": "例：A1B2-C3D4",
+    "totpSubmit": "確認して続行",
+    "totpUseRecovery": "リカバリコードを使用",
+    "totpUseCode": "認証コードを使用",
+    "totpRestart": "パスワード入力に戻る"
   },
   "topbar": {
     "menu": "メニュー",
@@ -378,6 +389,39 @@
       "catDesc": "現在のカテゴリ数",
       "size": "使用容量",
       "sizeDesc": "全体サイズ"
+    },
+    "totp": {
+      "title": "アカウントセキュリティ · 二要素認証 (TOTP)",
+      "featureDisabled": "プラグイン設定で TOTP が無効です。AstrBot 設定の webui.totp_enabled を有効にしてください。",
+      "statusLabel": "TOTP 状態",
+      "statusEnabled": "有効",
+      "statusDisabled": "無効",
+      "statusEnabledHint": "アカウント {account} に TOTP がバインド済み。残りリカバリコード {remaining} 個。",
+      "statusDisabledHint": "有効化するとログイン時にパスワードに加えてワンタイムコードが必要になり、安全性が高まります。",
+      "statusFailed": "TOTP 状態の取得に失敗しました",
+      "enable": "TOTP を有効化",
+      "disable": "TOTP を無効化",
+      "enableDone": "TOTP を有効にしました",
+      "disableDone": "TOTP を無効にしました",
+      "disableTitle": "TOTP を無効化",
+      "disableHint": "現在の認証コードまたはリカバリコードで本人確認が必要です。",
+      "useCode": "認証コード",
+      "useRecovery": "リカバリコード",
+      "recoveryPlaceholder": "例：A1B2-C3D4",
+      "setupQrHint": "Google Authenticator、1Password、Bitwarden など TOTP 対応アプリで以下の QR コードをスキャンしてください。",
+      "setupAccount": "アカウント",
+      "setupSecret": "シークレット",
+      "setupVerifyLabel": "認証アプリに表示された 6 桁のコードを入力して確認",
+      "setupConfirm": "バインドを確認",
+      "recoveryLabel": "リカバリコード",
+      "recoveryHint": "認証アプリを利用できない場合、リカバリコードでログインできます。各コードは 1 回のみ使用可能です。",
+      "recoveryRegen": "リカバリコードを再生成",
+      "recoveryRegenHint": "再生成すると以前のコードはすぐに無効になります。事前に現在の認証コードが必要です。",
+      "recoveryGenerated": "以下のリカバリコードを安全に保管してください",
+      "recoveryWarn": "今すぐコピーまたはダウンロードしてください。離れると再表示できません。各コードは 1 回のみ使用可能です。",
+      "recoveryDownload": "txt としてダウンロード",
+      "recoveryClose": "保存しました",
+      "recoveryDone": "リカバリコードを再生成しました"
     }
   },
   "trash": {

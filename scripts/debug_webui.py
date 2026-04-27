@@ -16,11 +16,15 @@
     # 4) 指定开发用数据目录（默认 ./.devdata 下）
     python scripts/debug_webui.py --data-dir D:/tmp/mp-dev/plugin --astrbot-data D:/tmp/mp-dev/astrbot
 
+    # 5) 关闭 TOTP（默认开启，方便本地直接体验「设置 → 账号安全」绑定流程）
+    python scripts/debug_webui.py --no-totp
+
 说明：
 - 前端静态资源（index.html / app.js / styles.css / components/*）均按请求从磁盘读取，
   修改后**刷新浏览器即可生效**，无需重启服务。
 - 仅 Python 代码改动需要重启（或使用 ``--reload``）。
 - 调试数据默认落在 ``./.devdata/``（已在 .gitignore 排除）；可随时删除。
+- 调试模式下 ``webui.totp_enabled`` 默认开启；首次启用 TOTP 前需要 ``pip install -r requirements-totp.txt``。
 """
 
 from __future__ import annotations
@@ -156,6 +160,9 @@ def _build_raw_config(
     public_base_url: str,
     expose_data: bool,
     allowed_origins: list[str],
+    totp_enabled: bool,
+    totp_issuer: str,
+    totp_account: str,
 ) -> dict[str, Any]:
     return {
         "webui": {
@@ -170,6 +177,9 @@ def _build_raw_config(
             "readonly_token_ttl": max(session_timeout, 3600),
             "share_url_ttl": max(session_timeout, 3600),
             "data_token_ttl": max(session_timeout, 3600),
+            "totp_enabled": totp_enabled,
+            "totp_issuer": totp_issuer,
+            "totp_account": totp_account,
         },
         "storage": {"location_mode": "plugin_data"},
         "downloader": {
@@ -207,6 +217,9 @@ def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
         public_base_url=args.public_base_url,
         expose_data=bool(args.expose_data),
         allowed_origins=[o for o in (args.allowed_origins or "").split(",") if o.strip()],
+        totp_enabled=bool(getattr(args, "totp_enabled", True)),
+        totp_issuer=str(getattr(args, "totp_issuer", "Media Portal (Debug)")),
+        totp_account=str(getattr(args, "totp_account", "debug-admin")),
     )
     settings = load_plugin_settings(raw_config, plugin_data_dir=plugin_data)
 
@@ -259,6 +272,22 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
     print(f"  Plugin data    : {server.media_manager.plugin_data_dir}")
     print(f"  AstrBot data   : {server.data_root}")
     print(f"  Expose data    : {server.expose_astrbot_data}")
+    totp_state = "on" if server.totp_feature_enabled else "off"
+    if server.totp_feature_enabled:
+        if server.totp_active:
+            totp_state = "on (bound)"
+        else:
+            totp_state = "on (not yet bound — open Settings → Account security)"
+    print(f"  TOTP feature   : {totp_state}")
+    if server.totp_feature_enabled:
+        try:
+            import pyotp  # noqa: F401
+            import qrcode  # noqa: F401
+        except ImportError:
+            print(
+                "  [warn]         pyotp / qrcode missing — run "
+                "`pip install -r requirements-totp.txt` to enable bind / verify."
+            )
     print(bar)
     print("  Ctrl+C to stop. Frontend edits hot-reload without restart.")
     print(bar)
@@ -300,6 +329,9 @@ def _args_from_env() -> argparse.Namespace:
         session_timeout=int(os.environ.get("MP_DEBUG_SESSION_TIMEOUT", "86400")),
         public_base_url=os.environ.get("MP_DEBUG_PUBLIC_BASE_URL", ""),
         allowed_origins=os.environ.get("MP_DEBUG_ALLOWED_ORIGINS", ""),
+        totp_enabled=os.environ.get("MP_DEBUG_TOTP_ENABLED", "1") == "1",
+        totp_issuer=os.environ.get("MP_DEBUG_TOTP_ISSUER", "Media Portal (Debug)"),
+        totp_account=os.environ.get("MP_DEBUG_TOTP_ACCOUNT", "debug-admin"),
     )
 
 
@@ -358,6 +390,9 @@ def _run_with_reload(args: argparse.Namespace) -> None:
     os.environ["MP_DEBUG_SESSION_TIMEOUT"] = str(args.session_timeout)
     os.environ["MP_DEBUG_PUBLIC_BASE_URL"] = args.public_base_url or ""
     os.environ["MP_DEBUG_ALLOWED_ORIGINS"] = args.allowed_origins or ""
+    os.environ["MP_DEBUG_TOTP_ENABLED"] = "1" if args.totp_enabled else "0"
+    os.environ["MP_DEBUG_TOTP_ISSUER"] = args.totp_issuer or "Media Portal (Debug)"
+    os.environ["MP_DEBUG_TOTP_ACCOUNT"] = args.totp_account or "debug-admin"
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     parent_str = str(PACKAGE_PARENT)
     if parent_str not in existing_pythonpath.split(os.pathsep):
@@ -434,6 +469,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reload",
         action="store_true",
         help="启用 Python 代码热重载（需 watchfiles；修改 core/webui 的 .py 后自动重启）",
+    )
+    totp_group = parser.add_mutually_exclusive_group()
+    totp_group.add_argument(
+        "--totp",
+        dest="totp_enabled",
+        action="store_true",
+        default=True,
+        help="启用 TOTP 双因素登录开关（默认开启，可在「设置 → 账号安全」中绑定）",
+    )
+    totp_group.add_argument(
+        "--no-totp",
+        dest="totp_enabled",
+        action="store_false",
+        help="关闭 TOTP 双因素登录开关（仅密码登录）",
+    )
+    parser.add_argument(
+        "--totp-issuer",
+        default="Media Portal (Debug)",
+        help="TOTP otpauth:// 发行方名称（写入二维码）",
+    )
+    parser.add_argument(
+        "--totp-account",
+        default="debug-admin",
+        help="TOTP otpauth:// 账号名（在 Authenticator 中显示）",
     )
     return parser.parse_args(argv)
 

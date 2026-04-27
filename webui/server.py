@@ -126,6 +126,7 @@ except Exception:  # pragma: no cover
 from ..core.category_manager import CategoryManager
 from ..core.derivatives import DerivativesManager
 from ..core.media_manager import DuplicateMediaError, MediaManager, MediaRecord
+from ..core.security import TotpStore
 from ..core.utils import (
     detect_mime_and_kind,
     generate_password,
@@ -137,6 +138,31 @@ from ..core.utils import (
     slugify_category,
     unique_path,
 )
+
+
+def _build_otpauth_qrcode_svg(uri: str) -> str:
+    """把 otpauth:// URI 渲染成 SVG 字符串，前端可直接 `v-html` / `<img src=data:image/svg+xml;...>`。
+
+    依赖 ``qrcode[pil]`` 中的纯 Python QRCode 编码器（不依赖 PIL 渲染本身），失败时返回空串，
+    前端会降级为只展示 secret 文本 + 手动输入的提示。
+    """
+    text = str(uri or "").strip()
+    if not text:
+        return ""
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+    except ImportError:
+        return ""
+    try:
+        img = qrcode.make(text, image_factory=SvgPathImage, box_size=10, border=2)
+        import io as _io
+
+        buf = _io.BytesIO()
+        img.save(buf)
+        return buf.getvalue().decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _copy_tree_overlay(src: Path, dst: Path) -> None:
@@ -231,6 +257,14 @@ class WebUIServer:
         )
         self.allowed_origins = self._parse_allowed_origins(config.get("allowed_origins"))
         self._capability_secret = self._load_or_create_capability_secret()
+        self.totp_feature_enabled = bool(config.get("totp_enabled", False))
+        # TotpStore 始终持有（即便功能开关关闭也能查询是否曾绑定过），
+        # 但路由开关由 totp_feature_enabled & store.enabled 联合决定。
+        self._totp_store = TotpStore(
+            state_dir=self.media_manager.plugin_data_dir,
+            issuer=str(config.get("totp_issuer", "Media Portal") or "Media Portal"),
+            account=str(config.get("totp_account", "admin") or "admin"),
+        )
 
         self._access_password = str(config.get("access_password", "") or "").strip()
         self._password_generated = False
@@ -269,6 +303,11 @@ class WebUIServer:
     @property
     def password_generated(self) -> bool:
         return self._password_generated
+
+    @property
+    def totp_active(self) -> bool:
+        """实际是否要在登录时强制 TOTP 二次验证。"""
+        return bool(self.totp_feature_enabled and self._totp_store.enabled)
 
     async def _get_trash_retention_days(self) -> int:
         getter = getattr(self.media_manager, "get_trash_retention_days", None)
@@ -630,6 +669,34 @@ class WebUIServer:
     async def _clear_failed_attempts(self, client_ip: str) -> None:
         async with self._attempt_lock:
             self._failed_attempts.pop(client_ip, None)
+
+    async def _issue_login_session(self) -> dict[str, Any]:
+        """登录密码 / TOTP 都通过后，构造完整的会话 token + capability token 响应。"""
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        async with self._token_lock:
+            self._cleanup_tokens_locked()
+            self._tokens[token] = {
+                "created_at": now,
+                "last_active": now,
+            }
+        media_token = self._issue_capability_token(
+            "media", "*", self.readonly_token_ttl
+        )
+        data_token = (
+            self._issue_capability_token("data", "*", self.data_token_ttl)
+            if self.expose_astrbot_data
+            else ""
+        )
+        return {
+            "token": token,
+            "expires_in": self.session_timeout,
+            "readonly_token": media_token,
+            "readonly_expires_in": self.readonly_token_ttl,
+            "data_token": data_token,
+            "data_expires_in": self.data_token_ttl if self.expose_astrbot_data else 0,
+            "base_url": self.get_preferred_base_url(),
+        }
 
     def _extract_token(self, request: Request) -> str:
         auth_header = request.headers.get("Authorization", "")
@@ -1042,31 +1109,148 @@ class WebUIServer:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="认证失败")
             await self._clear_failed_attempts(client_ip)
 
-            token = secrets.token_urlsafe(32)
-            now = time.time()
-            async with self._token_lock:
-                self._cleanup_tokens_locked()
-                self._tokens[token] = {
-                    "created_at": now,
-                    "last_active": now,
+            if self.totp_active:
+                # TOTP 已启用：先发短期 challenge_token，前端跳到第二步收集 6 位码。
+                challenge = self._issue_capability_token("login_totp", "*", 300)
+                return {
+                    "challenge": "totp",
+                    "challenge_token": challenge,
+                    "expires_in": 300,
+                    "issuer": self._totp_store.state.issuer,
+                    "account": self._totp_store.state.account,
                 }
-            media_token = self._issue_capability_token(
-                "media", "*", self.readonly_token_ttl
-            )
-            data_token = (
-                self._issue_capability_token("data", "*", self.data_token_ttl)
-                if self.expose_astrbot_data
-                else ""
-            )
+            return await self._issue_login_session()
+
+        @self._app.post("/api/login/totp")
+        async def login_totp(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+            challenge_token = str(payload.get("challenge_token", "") or "").strip()
+            code = str(payload.get("code", "") or "").strip()
+            recovery_code = str(payload.get("recovery_code", "") or "").strip()
+            client_ip = request.client.host if request.client else "unknown"
+
+            if not challenge_token:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="缺少 challenge_token"
+                )
+            if not code and not recovery_code:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="请输入 6 位验证码或恢复码"
+                )
+            if not self._validate_capability_token(
+                challenge_token, scope="login_totp", subject="*"
+            ):
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, detail="登录会话已过期，请重新输入密码"
+                )
+            if not self.totp_active:
+                # 例如管理员在 challenge 期间关闭了 TOTP，此时直接放行。
+                return await self._issue_login_session()
+
+            ok = False
+            if code:
+                ok = await self._totp_store.verify_code(code)
+            if not ok and recovery_code:
+                ok = await self._totp_store.consume_recovery_code(recovery_code)
+            if not ok:
+                accepted = await self._record_failed_attempt(client_ip)
+                await asyncio.sleep(0.6)
+                if not accepted:
+                    raise HTTPException(
+                        status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="尝试过于频繁，请稍后再试",
+                    )
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="验证码错误")
+            await self._clear_failed_attempts(client_ip)
+            return await self._issue_login_session()
+
+        @self._app.get("/api/account/totp/status")
+        async def get_totp_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
             return {
-                "token": token,
-                "expires_in": self.session_timeout,
-                "readonly_token": media_token,
-                "readonly_expires_in": self.readonly_token_ttl,
-                "data_token": data_token,
-                "data_expires_in": self.data_token_ttl if self.expose_astrbot_data else 0,
-                "base_url": self.get_preferred_base_url(),
+                "feature_enabled": self.totp_feature_enabled,
+                **self._totp_store.public_status(),
             }
+
+        @self._app.post("/api/account/totp/setup")
+        async def post_totp_setup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            if not self.totp_feature_enabled:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="未启用 TOTP 功能，请先在插件配置中开启 webui.totp_enabled。",
+                )
+            try:
+                payload = await self._totp_store.begin_setup()
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
+            payload["qrcode_svg"] = _build_otpauth_qrcode_svg(payload["otpauth_uri"])
+            return payload
+
+        @self._app.post("/api/account/totp/confirm")
+        async def post_totp_confirm(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            try:
+                return await self._totp_store.confirm_setup(
+                    str(payload.get("code", "") or "")
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+
+        @self._app.post("/api/account/totp/cancel-setup")
+        async def post_totp_cancel_setup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            await self._totp_store.cancel_setup()
+            return {"cancelled": True}
+
+        @self._app.post("/api/account/totp/disable")
+        async def post_totp_disable(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            code = str(payload.get("code", "") or "").strip()
+            recovery_code = str(payload.get("recovery_code", "") or "").strip()
+            try:
+                await self._totp_store.disable(
+                    code=code or None, recovery_code=recovery_code or None
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return {"enabled": False}
+
+        @self._app.post("/api/account/totp/regenerate-recovery")
+        async def post_totp_regen_recovery(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            code = str(payload.get("code", "") or "").strip()
+            try:
+                codes = await self._totp_store.regenerate_recovery_codes(code=code)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return {"recovery_codes": codes, "remaining_recovery_codes": len(codes)}
 
         @self._app.post("/api/logout")
         async def logout(token: str = Depends(self._auth_dependency())) -> dict[str, str]:
@@ -1103,6 +1287,8 @@ class WebUIServer:
                 "max_file_size_mb": max_mb,
                 "max_file_size_bytes": max_bytes,
                 "trash_retention_days": trash_retention_days,
+                "totp_feature_enabled": self.totp_feature_enabled,
+                "totp_active": self.totp_active,
             }
 
         @self._app.get("/api/settings/trash")

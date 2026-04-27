@@ -140,6 +140,9 @@ class WebUISettings:
     readonly_token_ttl: int = 3600
     share_url_ttl: int = 3600
     data_token_ttl: int = 3600
+    totp_enabled: bool = False
+    totp_issuer: str = "Media Portal"
+    totp_account: str = "admin"
 
 
 @dataclass(slots=True)
@@ -237,6 +240,9 @@ def load_plugin_settings(
         ),
         share_url_ttl=_as_int(webui_raw.get("share_url_ttl"), 3600, minimum=60),
         data_token_ttl=_as_int(webui_raw.get("data_token_ttl"), 3600, minimum=60),
+        totp_enabled=_as_bool(webui_raw.get("totp_enabled"), False),
+        totp_issuer=_as_str(webui_raw.get("totp_issuer"), "Media Portal") or "Media Portal",
+        totp_account=_as_str(webui_raw.get("totp_account"), "admin") or "admin",
     )
     storage = StorageSettings(
         location_mode=(

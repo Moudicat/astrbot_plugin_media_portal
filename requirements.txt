@@ -6,3 +6,5 @@ aiosqlite>=0.19
 python-multipart>=0.0.7
 pillow>=10
 mutagen>=1.47
+pyotp>=2.9
+qrcode[pil]>=7.4

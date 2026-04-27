@@ -139,6 +139,9 @@ class MediaPortalPlugin(Star):
             "readonly_token_ttl": self.settings.webui.readonly_token_ttl,
             "share_url_ttl": self.settings.webui.share_url_ttl,
             "data_token_ttl": self.settings.webui.data_token_ttl,
+            "totp_enabled": self.settings.webui.totp_enabled,
+            "totp_issuer": self.settings.webui.totp_issuer,
+            "totp_account": self.settings.webui.totp_account,
         }
         self.webui_server = WebUIServer(
             media_manager=self.media_manager,

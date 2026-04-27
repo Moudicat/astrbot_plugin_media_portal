@@ -69,6 +69,24 @@
         "type": "int",
         "default": 3600,
         "hint": "Data 浏览中的 /api/data-file 访问 token 过期时间。"
+      },
+      "totp_enabled": {
+        "description": "启用 TOTP 双因素登录（Google Authenticator）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后允许在设置面板「账号安全」分区绑定 6 位动态码二次验证；需要先安装 requirements-totp.txt。"
+      },
+      "totp_issuer": {
+        "description": "TOTP 二维码 Issuer",
+        "type": "string",
+        "default": "Media Portal",
+        "hint": "在 Authenticator App 中显示的服务名称。"
+      },
+      "totp_account": {
+        "description": "TOTP 账号名",
+        "type": "string",
+        "default": "admin",
+        "hint": "在 Authenticator App 中显示的账号标识，仅作显示用途。"
       }
     }
   },

@@ -60,7 +60,9 @@ export async function request<T = any>(url: string, opts: RequestOptions = {}): 
     if (response.status === 401) {
       try {
         const authStore = useAuthStore();
-        authStore.logout(false);
+        if (authStore.isAuthenticated) {
+          authStore.logout(false);
+        }
       } catch (_e) {
         // pinia store 未就绪时忽略
       }

@@ -44,6 +44,7 @@
 | 📱 响应式 | 同时适配 PC 与移动端 |
 | 🔍 Data 资源浏览 | 只读浏览 AstrBot `/data` 目录，支持图片/视频/音频预览 |
 | 🔐 安全控制 | 登录限流、媒体只读 token、路径越界防护、体积限制 |
+| 🛡️ 双因素登录（可选） | TOTP / Google Authenticator 兼容，支持恢复代码与一键启停 |
 
 ## 🖼️ 截图
 
@@ -151,6 +152,8 @@ pip install -r requirements.txt
 - `readonly_token_ttl`：WebUI 媒体预览 token 有效期（秒）；
 - `share_url_ttl`：`get_media_url` / 复制链接生成 token 的有效期（秒）；
 - `data_token_ttl`：Data 文件直链 token 有效期（秒）。
+- `totp_enabled`：是否允许在「设置 → 账号安全」中开启 TOTP 双因素登录（默认 `false`）。
+- `totp_issuer` / `totp_account`：写入二维码 / `otpauth://` URI 的发行方与账号名，用于在 Authenticator 应用中识别本实例。
 
 ### `storage`
 
@@ -220,7 +223,17 @@ A：那是容器（Docker / K8s）内部网桥地址，宿主机/外网本来就
 1. 生产环境务必设置固定强密码，不要长期使用随机密码；
 2. 若开放公网访问，请配合反向代理与 HTTPS；
 3. 分享链接已带过期时间，但仍建议最小化转发范围并定期轮换密码；
-4. 建议限制上传/下载来源并定期清理历史媒体。
+4. 建议限制上传/下载来源并定期清理历史媒体；
+5. 公网或多用户场景**强烈建议启用 TOTP 双因素登录**（见下文）。
+
+### 🛡️ 启用 TOTP 双因素登录（可选）
+
+1. 在 AstrBot 配置中启用 `webui.totp_enabled = true`（可同时设置 `totp_issuer` / `totp_account`），重载插件；
+2. 用密码登录 WebUI → 顶栏「设置」 → **账号安全 · TOTP**；
+3. 点「启用 TOTP」，使用 Google Authenticator / 1Password / Bitwarden 等扫描二维码，输入 6 位验证码完成绑定；
+4. 系统会一次性显示 8 个**恢复代码**，请立即复制或下载（每个仅可使用一次，离开页面后无法再次查看）；
+5. 之后登录会先校验密码，再要求输入 6 位动态码或恢复代码，方可签发会话；
+6. TOTP 密钥与恢复码哈希仅落在 `data/plugin_data/.../.totp_state`（权限 0600），**不会写入 SQLite，也不会包含在备份归档中**。
 
 ## 🧪 独立调试 WebUI
 
@@ -260,6 +273,8 @@ python scripts/debug_webui.py --reload
 | `--session-timeout` | 登录会话秒数（默认 86400，调试期偏长） |
 | `--allowed-origins` | CORS 白名单（逗号分隔） |
 | `--reload` | 启用 Python 代码热重载（依赖 watchfiles） |
+| `--totp` / `--no-totp` | 是否在调试 WebUI 中启用 TOTP（**默认开启**，可在「设置 → 账号安全」中扫码绑定） |
+| `--totp-issuer` / `--totp-account` | TOTP `otpauth://` URI 中显示的发行方与账号名 |
 
 ## 📚 开发参考
 

@@ -11,6 +11,8 @@ function defaultConfig(): PortalConfig {
     max_file_size_mb: 500,
     max_file_size_bytes: 500 * 1024 * 1024,
     trash_retention_days: 30,
+    totp_feature_enabled: false,
+    totp_active: false,
   };
 }
 

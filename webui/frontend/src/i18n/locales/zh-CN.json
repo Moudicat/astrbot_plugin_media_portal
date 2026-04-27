@@ -10,7 +10,9 @@
     "closeEsc": "关闭 (Esc)",
     "save": "保存",
     "done": "完成",
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "copy": "复制",
+    "copied": "已复制到剪贴板"
   },
   "login": {
     "passwordLabel": "访问密码",
@@ -20,7 +22,16 @@
     "loading": "登录中...",
     "submit": "登录控制台",
     "welcome": "欢迎回来 Media Portal",
-    "loggedOut": "已安全退出"
+    "loggedOut": "已安全退出",
+    "totpHint": "请输入 Authenticator 应用中显示的 6 位动态验证码",
+    "totpRecoveryHint": "请输入一次性恢复代码（每个仅可使用一次）",
+    "totpCodeLabel": "动态验证码",
+    "totpRecoveryLabel": "恢复代码",
+    "totpRecoveryPlaceholder": "如：A1B2-C3D4",
+    "totpSubmit": "完成验证",
+    "totpUseRecovery": "改用恢复代码",
+    "totpUseCode": "改用验证码",
+    "totpRestart": "返回重新输入密码"
   },
   "topbar": {
     "menu": "菜单",
@@ -378,6 +389,39 @@
       "catDesc": "当前分类数",
       "size": "占用空间",
       "sizeDesc": "总体大小"
+    },
+    "totp": {
+      "title": "账号安全 · 双因素验证 (TOTP)",
+      "featureDisabled": "TOTP 功能未在插件配置中启用，请前往 AstrBot 配置面板开启 webui.totp_enabled。",
+      "statusLabel": "TOTP 登录状态",
+      "statusEnabled": "已启用",
+      "statusDisabled": "未启用",
+      "statusEnabledHint": "账号 {account} 已绑定 TOTP，剩余可用恢复代码 {remaining} 个。",
+      "statusDisabledHint": "启用后登录需要在密码之外提供一次性验证码，更难被盗用。",
+      "statusFailed": "无法获取 TOTP 状态",
+      "enable": "启用 TOTP",
+      "disable": "停用 TOTP",
+      "enableDone": "TOTP 已成功启用",
+      "disableDone": "TOTP 已停用",
+      "disableTitle": "停用 TOTP",
+      "disableHint": "停用前需要提供当前验证码或一次恢复代码以确认身份。",
+      "useCode": "动态验证码",
+      "useRecovery": "恢复代码",
+      "recoveryPlaceholder": "如：A1B2-C3D4",
+      "setupQrHint": "使用 Google Authenticator / 1Password / Bitwarden 等支持 TOTP 的应用扫描下方二维码。",
+      "setupAccount": "账号",
+      "setupSecret": "密钥",
+      "setupVerifyLabel": "请输入 Authenticator 中显示的 6 位验证码以确认",
+      "setupConfirm": "确认绑定",
+      "recoveryLabel": "恢复代码",
+      "recoveryHint": "若手机丢失或验证器无法使用，可使用恢复代码登录。每个代码仅可使用一次。",
+      "recoveryRegen": "重新生成恢复代码",
+      "recoveryRegenHint": "重新生成后旧的恢复代码将立即失效，需先输入当前验证码。",
+      "recoveryGenerated": "请妥善保存以下恢复代码",
+      "recoveryWarn": "请立刻复制或下载，离开此页面后将无法再次查看。每个代码仅可使用一次。",
+      "recoveryDownload": "下载为 txt",
+      "recoveryClose": "我已妥善保存",
+      "recoveryDone": "恢复代码已重新生成"
     }
   },
   "trash": {

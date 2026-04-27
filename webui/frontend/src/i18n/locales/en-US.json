@@ -10,7 +10,9 @@
     "closeEsc": "Close (Esc)",
     "save": "Save",
     "done": "Done",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "copy": "Copy",
+    "copied": "Copied to clipboard"
   },
   "login": {
     "passwordLabel": "Access Password",
@@ -20,7 +22,16 @@
     "loading": "Signing in...",
     "submit": "Sign in",
     "welcome": "Welcome back to Media Portal",
-    "loggedOut": "Signed out safely"
+    "loggedOut": "Signed out safely",
+    "totpHint": "Enter the 6-digit code shown in your authenticator app",
+    "totpRecoveryHint": "Enter a recovery code (each can only be used once)",
+    "totpCodeLabel": "Verification code",
+    "totpRecoveryLabel": "Recovery code",
+    "totpRecoveryPlaceholder": "e.g. A1B2-C3D4",
+    "totpSubmit": "Verify & continue",
+    "totpUseRecovery": "Use a recovery code",
+    "totpUseCode": "Use a verification code",
+    "totpRestart": "Back to password"
   },
   "topbar": {
     "menu": "Menu",
@@ -378,6 +389,39 @@
       "catDesc": "Current categories",
       "size": "Disk usage",
       "sizeDesc": "Total size"
+    },
+    "totp": {
+      "title": "Account Security · Two-Factor (TOTP)",
+      "featureDisabled": "TOTP is not enabled in plugin config. Toggle webui.totp_enabled in the AstrBot settings to use it.",
+      "statusLabel": "TOTP status",
+      "statusEnabled": "Enabled",
+      "statusDisabled": "Disabled",
+      "statusEnabledHint": "Account {account} is bound to TOTP. {remaining} recovery codes remain.",
+      "statusDisabledHint": "When enabled, sign-in requires both your password and a one-time code from your authenticator app.",
+      "statusFailed": "Failed to load TOTP status",
+      "enable": "Enable TOTP",
+      "disable": "Disable TOTP",
+      "enableDone": "TOTP enabled successfully",
+      "disableDone": "TOTP disabled",
+      "disableTitle": "Disable TOTP",
+      "disableHint": "Provide a current verification code or a recovery code to confirm.",
+      "useCode": "Verification code",
+      "useRecovery": "Recovery code",
+      "recoveryPlaceholder": "e.g. A1B2-C3D4",
+      "setupQrHint": "Scan the QR code below with Google Authenticator, 1Password, Bitwarden or any TOTP-compatible app.",
+      "setupAccount": "Account",
+      "setupSecret": "Secret",
+      "setupVerifyLabel": "Enter the 6-digit code shown by your authenticator to confirm",
+      "setupConfirm": "Confirm binding",
+      "recoveryLabel": "Recovery codes",
+      "recoveryHint": "Recovery codes let you sign in if you lose your authenticator. Each code can only be used once.",
+      "recoveryRegen": "Regenerate recovery codes",
+      "recoveryRegenHint": "Old codes are invalidated immediately after regeneration. A current verification code is required.",
+      "recoveryGenerated": "Save the codes below in a secure place",
+      "recoveryWarn": "Copy or download these codes now. They cannot be shown again. Each can only be used once.",
+      "recoveryDownload": "Download as txt",
+      "recoveryClose": "I have saved them",
+      "recoveryDone": "New recovery codes generated"
     }
   },
   "trash": {
