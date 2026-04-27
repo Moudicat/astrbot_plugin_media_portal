@@ -185,6 +185,8 @@
 
           <TotpSection />
 
+          <IntelligenceSection />
+
           <section class="settings-section">
             <h4>{{ $t("settings.backupTitle") }}</h4>
             <div class="settings-row">
@@ -273,6 +275,7 @@ import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import LanguageSwitcher from "@/components/common/LanguageSwitcher.vue";
 import TotpSection from "@/components/settings/TotpSection.vue";
+import IntelligenceSection from "@/components/settings/IntelligenceSection.vue";
 import {
   GRID_DENSITY_KEYS,
   PAGE_SIZE_OPTIONS,

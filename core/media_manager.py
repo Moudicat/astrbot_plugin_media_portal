@@ -698,6 +698,25 @@ class MediaManager:
             return None
         return self._row_to_record(row)
 
+    async def list_image_records_minimal(self) -> list[tuple[int, str, str]]:
+        """供智能能力（CLIP / 人脸）拉取所有图片记录的极简视图。
+
+        返回 ``[(media_id, sha256, abs_path)]``，避免一次性反序列化完整 ``MediaRecord``。
+        """
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT id, sha256, rel_path FROM media WHERE kind = 'image'"
+        )
+        rows = await cursor.fetchall()
+        return [
+            (
+                int(row["id"]),
+                str(row["sha256"] or ""),
+                str((self.media_root / row["rel_path"]).resolve()),
+            )
+            for row in rows
+        ]
+
     async def _get_by_sha256(self, sha256: str) -> MediaRecord | None:
         conn = await self._ensure_conn()
         cursor = await conn.execute(

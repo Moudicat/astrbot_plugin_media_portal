@@ -2999,11 +2999,17 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
 }
 
 .settings-modal {
-  width: min(620px, 100%);
+  width: min(880px, 96vw);
 }
 
 .settings-body {
   gap: 18px;
+}
+
+@media (min-width: 1280px) {
+  .settings-modal {
+    width: min(960px, 92vw);
+  }
 }
 
 .settings-section {

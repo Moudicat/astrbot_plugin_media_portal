@@ -13,6 +13,14 @@ function defaultConfig(): PortalConfig {
     trash_retention_days: 30,
     totp_feature_enabled: false,
     totp_active: false,
+    intelligence: {
+      feature_enabled: false,
+      clip_enabled: false,
+      face_enabled: false,
+      clip_ready: false,
+      face_ready: false,
+      hf_mirror_url: "",
+    },
   };
 }
 
@@ -27,6 +35,14 @@ export const useConfigStore = defineStore("config", {
       state.config.max_file_size_bytes || (state.config.max_file_size_mb || 500) * 1024 * 1024,
     publicBaseUrl: (state): string => state.config.public_base_url || "",
     trashRetentionDays: (state): number => Number(state.config.trash_retention_days || 30) || 30,
+    canFaceBrowse: (state): boolean =>
+      !!(
+        state.config.intelligence &&
+        state.config.intelligence.feature_enabled &&
+        state.config.intelligence.face_enabled
+      ),
+    faceReady: (state): boolean =>
+      !!(state.config.intelligence && state.config.intelligence.face_ready),
   },
   actions: {
     async fetch() {

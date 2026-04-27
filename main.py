@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover
     astrbot_config = None
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
+from .core.intelligence import IntelligenceManager
 from .core.utils import (
     format_duration,
     format_size,
@@ -60,6 +61,14 @@ class MediaPortalPlugin(Star):
             allowed_kinds=self.settings.downloader.allowed_kinds,
             max_file_size_mb=self.settings.downloader.max_file_size_mb,
             default_move_local=self.settings.downloader.default_move_local,
+        )
+        self.intelligence_manager = IntelligenceManager(
+            plugin_data_dir=self.plugin_data_dir,
+            feature_enabled=self.settings.intelligence.enabled,
+            clip_enabled=self.settings.intelligence.clip_enabled,
+            face_enabled=self.settings.intelligence.face_enabled,
+            hf_mirror_url=self.settings.intelligence.hf_mirror_url,
+            max_concurrent_downloads=self.settings.intelligence.max_concurrent_downloads,
         )
         self.webui_server: WebUIServer | None = None
 
@@ -149,6 +158,7 @@ class MediaPortalPlugin(Star):
             config=config,
             data_root=self.settings.astrbot_data_dir,
             callback_api_base=callback_api_base,
+            intelligence_manager=self.intelligence_manager,
         )
         await self.webui_server.start()
 
@@ -598,6 +608,128 @@ class MediaPortalPlugin(Star):
             lines.append(f"- {text}")
         return "\n".join(lines)
 
+    @llm_tool(name="search_media_semantic")
+    async def tool_search_media_semantic(
+        self,
+        event: AstrMessageEvent,
+        query: str,
+        limit: int = 10,
+    ) -> str:
+        """语义检索图片（CLIP 语义搜索；仅在管理面板启用并下载完模型后可用）。
+
+        Args:
+            query(str): 自然语言描述，例如 "一只在草地上的橘色小猫"。
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.clip_enabled
+        ):
+            return "CLIP 语义检索未启用，请前往后台 → 设置 → 智能能力面板下载并启用 CLIP 模型。"
+        text = str(query or "").strip()
+        if not text:
+            return "请输入要检索的描述。"
+        top_k = max(1, min(50, self._parse_limit(limit, 10)))
+        pairs = await self.intelligence_manager.search_clip_by_text(text, top_k=top_k)
+        if not pairs:
+            return "没有匹配的图片，可能尚未完成索引。"
+        lines = [f"语义检索 “{text}”："]
+        for media_id, score in pairs:
+            record = await self.media_manager.get_by_id(int(media_id))
+            if record is None:
+                continue
+            lines.append(f"- score={score:.3f} {self._compact_record(record)}")
+        if len(lines) == 1:
+            return "没有匹配的图片。"
+        return "\n".join(lines)
+
+    @llm_tool(name="list_face_persons")
+    async def tool_list_face_persons(
+        self,
+        event: AstrMessageEvent,
+        limit: int = 20,
+    ) -> str:
+        """列出已识别到的人脸角色（按出现次数排序）。仅在管理面板启用人脸功能后可用。
+
+        Args:
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.face_enabled
+        ):
+            return "人脸功能未启用，请前往后台 → 设置 → 智能能力面板下载并启用人脸模型。"
+        store = await self.intelligence_manager.get_face_store()
+        if store is None:
+            return "人脸功能未启用。"
+        persons = await store.list_persons()
+        if not persons:
+            return "尚未识别到任何人脸，可在后台触发一次扫描。"
+        top = persons[: max(1, min(50, self._parse_limit(limit, 20)))]
+        lines = [f"人脸角色（共 {len(persons)} 个）："]
+        for person in top:
+            label = person.name or f"未命名#{person.id}"
+            lines.append(f"- id={person.id} 名称={label} 出现 {person.face_count} 次")
+        return "\n".join(lines)
+
+    @llm_tool(name="find_media_with_person")
+    async def tool_find_media_with_person(
+        self,
+        event: AstrMessageEvent,
+        person_id: str,
+        limit: int = 10,
+    ) -> str:
+        """根据人脸角色 id 查找包含该人物的媒体。仅在人脸功能启用后可用。
+
+        Args:
+            person_id(string): 角色 id（数字字符串）。
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.face_enabled
+        ):
+            return "人脸功能未启用，请前往后台 → 设置 → 智能能力面板下载并启用人脸模型。"
+        try:
+            pid = int(str(person_id).strip())
+        except (TypeError, ValueError):
+            return "person_id 应为数字。"
+        store = await self.intelligence_manager.get_face_store()
+        if store is None:
+            return "人脸功能未启用。"
+        person = await store.get_person(pid)
+        if person is None:
+            return f"未找到 id={pid} 的角色。"
+        top_k = max(1, min(50, self._parse_limit(limit, 10)))
+        faces = await store.list_faces_by_person(pid, limit=top_k)
+        if not faces:
+            return f"角色 {person.name or pid} 暂无关联媒体。"
+        lines = [f"角色 {person.name or pid} 出现于："]
+        seen: set[int] = set()
+        for face in faces:
+            if face.media_id in seen:
+                continue
+            seen.add(face.media_id)
+            record = await self.media_manager.get_by_id(int(face.media_id))
+            if record is None:
+                continue
+            lines.append(f"- {self._compact_record(record)}")
+        if len(lines) == 1:
+            return "暂无关联媒体。"
+        return "\n".join(lines)
+
     @llm_tool(name="search_media")
     async def tool_search_media(
         self,
@@ -833,6 +965,10 @@ class MediaPortalPlugin(Star):
             await asyncio.gather(*pending, return_exceptions=True)
         self._background_tasks.clear()
         await self._stop_webui()
+        try:
+            await self.intelligence_manager.shutdown()
+        except Exception as exc:
+            logger.warning("关闭 IntelligenceManager 失败: %s", exc)
         try:
             await self.media_manager.close()
         except Exception as exc:

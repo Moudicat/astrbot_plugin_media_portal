@@ -214,10 +214,12 @@ class WebUIServer:
         config: dict[str, Any],
         data_root: Path,
         callback_api_base: str = "",
+        intelligence_manager: Any = None,
     ):
         self.media_manager = media_manager
         self.category_manager = category_manager
         self.config = config
+        self.intelligence_manager = intelligence_manager
         self.data_root = data_root.resolve()
         self.media_root = self.media_manager.media_root
         # 缩略图目录转由 DerivativesManager 管辖（plugin_data/derivatives/thumbnails）。
@@ -308,6 +310,44 @@ class WebUIServer:
     def totp_active(self) -> bool:
         """实际是否要在登录时强制 TOTP 二次验证。"""
         return bool(self.totp_feature_enabled and self._totp_store.enabled)
+
+    def _build_intelligence_summary(self) -> dict[str, Any]:
+        """对外暴露 intelligence 总开关 + 子能力当前状态。
+
+        - 不强依赖 ``IntelligenceManager`` 已挂载，缺失时返回禁用占位，前端会按
+          ``feature_enabled=false`` 隐藏入口。
+        - 子能力是否「真正可用」取决于：
+            (1) feature_enabled；
+            (2) 对应 *_enabled 子开关；
+            (3) 模型在磁盘上的状态为 ``ready``。
+        """
+        manager = self.intelligence_manager
+        if manager is None:
+            return {
+                "feature_enabled": False,
+                "clip_enabled": False,
+                "face_enabled": False,
+                "clip_ready": False,
+                "face_ready": False,
+                "hf_mirror_url": "",
+            }
+        snapshots = manager.snapshots()
+        clip_ready = any(
+            snap.capability == "clip" and snap.status.value == "ready"
+            for snap in snapshots
+        )
+        face_ready = any(
+            snap.capability == "face" and snap.status.value == "ready"
+            for snap in snapshots
+        )
+        return {
+            "feature_enabled": manager.feature_enabled,
+            "clip_enabled": manager.clip_enabled,
+            "face_enabled": manager.face_enabled,
+            "clip_ready": clip_ready and manager.clip_enabled,
+            "face_ready": face_ready and manager.face_enabled,
+            "hf_mirror_url": manager.hf_mirror_url,
+        }
 
     async def _get_trash_retention_days(self) -> int:
         getter = getattr(self.media_manager, "get_trash_retention_days", None)
@@ -1289,6 +1329,7 @@ class WebUIServer:
                 "trash_retention_days": trash_retention_days,
                 "totp_feature_enabled": self.totp_feature_enabled,
                 "totp_active": self.totp_active,
+                "intelligence": self._build_intelligence_summary(),
             }
 
         @self._app.get("/api/settings/trash")
@@ -1889,3 +1930,407 @@ class WebUIServer:
                 upload=archive,
                 replace_media=bool(replace_media),
             )
+
+        # ---- Intelligence (CLIP / Face) ----
+
+        def _require_intelligence():
+            if self.intelligence_manager is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="智能能力未启用",
+                )
+            return self.intelligence_manager
+
+        @self._app.get("/api/intelligence/models")
+        async def intel_list_models(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            return {
+                "feature_enabled": manager.feature_enabled,
+                "clip_enabled": manager.clip_enabled,
+                "face_enabled": manager.face_enabled,
+                "hf_mirror_url": manager.hf_mirror_url,
+                "models": [snap.to_dict() for snap in manager.snapshots()],
+            }
+
+        @self._app.post("/api/intelligence/models/{model_key}/download")
+        async def intel_start_download(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            spec = manager.get_spec(model_key)
+            if spec is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在")
+            try:
+                await manager.start_download(model_key)
+            except KeyError:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在") from None
+            snap = manager.snapshot(model_key)
+            return {"started": True, "model": snap.to_dict() if snap else None}
+
+        @self._app.post("/api/intelligence/models/{model_key}/cancel")
+        async def intel_cancel_download(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            cancelled = await manager.cancel_download(model_key)
+            snap = manager.snapshot(model_key)
+            return {
+                "cancelled": cancelled,
+                "model": snap.to_dict() if snap else None,
+            }
+
+        @self._app.delete("/api/intelligence/models/{model_key}")
+        async def intel_remove_model(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            spec = manager.get_spec(model_key)
+            if spec is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在")
+            await manager.remove_model(model_key)
+            snap = manager.snapshot(model_key)
+            return {"removed": True, "model": snap.to_dict() if snap else None}
+
+        @self._app.patch("/api/intelligence/settings")
+        async def intel_patch_settings(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            manager.update_settings(
+                feature_enabled=payload.get("feature_enabled"),
+                clip_enabled=payload.get("clip_enabled"),
+                face_enabled=payload.get("face_enabled"),
+                hf_mirror_url=payload.get("hf_mirror_url"),
+                max_concurrent_downloads=payload.get("max_concurrent_downloads"),
+            )
+            return {
+                "feature_enabled": manager.feature_enabled,
+                "clip_enabled": manager.clip_enabled,
+                "face_enabled": manager.face_enabled,
+                "hf_mirror_url": manager.hf_mirror_url,
+            }
+
+        # ---- CLIP 索引与语义搜索 ----
+
+        async def _iter_image_records():
+            getter = getattr(self.media_manager, "list_image_records_minimal", None)
+            if not callable(getter):
+                return []
+            return await getter()
+
+        @self._app.get("/api/intelligence/clip/status")
+        async def intel_clip_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_clip_store()
+            indexed = await store.count() if store is not None else 0
+            engine = await manager.get_clip_engine()
+            scan_task = manager._clip_scan_task  # type: ignore[attr-defined]
+            scanning = bool(scan_task and not scan_task.done())
+            worker = manager._clip_worker  # type: ignore[attr-defined]
+            stats = getattr(worker, "stats", None) if worker is not None else None
+            stats_payload: dict[str, Any] = {}
+            if stats is not None:
+                stats_payload = {
+                    "indexed": stats.indexed,
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                    "last_run_at": stats.last_run_at,
+                    "last_error": stats.last_error,
+                }
+            return {
+                "engine_ready": engine is not None,
+                "indexed_count": indexed,
+                "scanning": scanning,
+                "stats": stats_payload,
+            }
+
+        @self._app.post("/api/intelligence/clip/scan")
+        async def intel_clip_scan(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            started = await manager.trigger_clip_scan(
+                iter_image_records=_iter_image_records
+            )
+            return {"started": started}
+
+        @self._app.get("/api/intelligence/clip/search")
+        async def intel_clip_search(
+            q: str,
+            top_k: int = 20,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            text = (q or "").strip()
+            if not text:
+                return {"results": [], "engine_ready": False}
+            limit = max(1, min(100, int(top_k or 20)))
+            pairs = await manager.search_clip_by_text(text, top_k=limit)
+            results: list[dict[str, Any]] = []
+            for media_id, score in pairs:
+                getter = getattr(self.media_manager, "get_by_id", None)
+                if not callable(getter):
+                    continue
+                record = await getter(media_id)
+                if record is None:
+                    continue
+                payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                payload["score"] = float(score)
+                results.append(payload)
+            return {
+                "results": results,
+                "engine_ready": True,
+                "query": text,
+            }
+
+        @self._app.delete("/api/intelligence/clip/index/{media_id}")
+        async def intel_clip_remove_one(
+            media_id: int,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_clip_store()
+            if store is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="CLIP 未启用"
+                )
+            await store.delete(int(media_id))
+            return {"removed": True, "media_id": media_id}
+
+        # ---- 人脸 / Person 管理 ----
+
+        async def _require_face_store():
+            manager = _require_intelligence()
+            store = await manager.get_face_store()
+            if store is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="人脸功能未启用"
+                )
+            return manager, store
+
+        async def _require_face_clusterer():
+            manager = _require_intelligence()
+            clusterer = await manager.get_face_clusterer()
+            if clusterer is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="人脸功能未启用"
+                )
+            return manager, clusterer
+
+        async def _attach_media_meta(items: list[dict[str, Any]]) -> None:
+            getter = getattr(self.media_manager, "get_by_id", None)
+            if not callable(getter):
+                return
+            cache: dict[int, Any] = {}
+            for item in items:
+                mid = item.get("media_id")
+                if mid is None:
+                    continue
+                if mid not in cache:
+                    cache[mid] = await getter(int(mid))
+                record = cache[mid]
+                if record is None:
+                    continue
+                payload = (
+                    record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                )
+                item["media"] = {
+                    "id": payload.get("id"),
+                    "filename": payload.get("filename"),
+                    "category": payload.get("category"),
+                    "kind": payload.get("kind"),
+                    "rel_path": payload.get("rel_path"),
+                    "size": payload.get("size"),
+                    "size_human": payload.get("size_human"),
+                    "tags": payload.get("tags"),
+                }
+
+        @self._app.get("/api/intelligence/face/status")
+        async def intel_face_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_face_store()
+            engine = await manager.get_face_engine()
+            face_count = await store.count_faces() if store else 0
+            person_count = await store.count_persons() if store else 0
+            scan_task = manager._face_scan_task  # type: ignore[attr-defined]
+            scanning = bool(scan_task and not scan_task.done())
+            worker = manager._face_worker  # type: ignore[attr-defined]
+            stats = getattr(worker, "stats", None) if worker is not None else None
+            stats_payload: dict[str, Any] = {}
+            if stats is not None:
+                stats_payload = {
+                    "media_processed": stats.media_processed,
+                    "faces_indexed": stats.faces_indexed,
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                    "last_run_at": stats.last_run_at,
+                    "last_error": stats.last_error,
+                }
+            return {
+                "engine_ready": engine is not None,
+                "face_count": face_count,
+                "person_count": person_count,
+                "scanning": scanning,
+                "stats": stats_payload,
+            }
+
+        @self._app.post("/api/intelligence/face/scan")
+        async def intel_face_scan(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            started = await manager.trigger_face_scan(
+                iter_image_records=_iter_image_records
+            )
+            return {"started": started}
+
+        @self._app.post("/api/intelligence/face/recluster")
+        async def intel_face_recluster(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            report = await clusterer.recluster_dbscan()
+            return {
+                "persons_before": report.persons_before,
+                "persons_after": report.persons_after,
+                "merged": report.merged,
+                "created": report.created,
+                "moved_faces": report.moved_faces,
+            }
+
+        @self._app.get("/api/intelligence/face/persons")
+        async def intel_face_list_persons(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            persons = await store.list_persons()
+            return {"persons": [p.to_dict() for p in persons]}
+
+        @self._app.get("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_detail(
+            person_id: int,
+            limit: int = 200,
+            offset: int = 0,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            person = await store.get_person(person_id)
+            if person is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="角色不存在")
+            faces = await store.list_faces_by_person(
+                person_id, limit=max(1, min(500, limit)), offset=max(0, offset)
+            )
+            face_dicts = [face.to_dict() for face in faces]
+            await _attach_media_meta(face_dicts)
+            return {
+                "person": person.to_dict(),
+                "faces": face_dicts,
+            }
+
+        @self._app.patch("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_rename(
+            person_id: int,
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            name = payload.get("name")
+            sample = payload.get("sample_face_id")
+            await store.update_person(
+                person_id,
+                name=str(name) if name is not None else None,
+                sample_face_id=int(sample) if sample is not None else None,
+            )
+            person = await store.get_person(person_id)
+            return {"person": person.to_dict() if person else None}
+
+        @self._app.post("/api/intelligence/face/persons/merge")
+        async def intel_face_person_merge(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            target = payload.get("target_id")
+            sources = payload.get("source_ids") or []
+            if target is None or not isinstance(sources, list) or not sources:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="缺少 target_id 或 source_ids",
+                )
+            moved = await clusterer.merge_persons(
+                [int(v) for v in sources], int(target)
+            )
+            return {"merged": True, "moved_faces": moved}
+
+        @self._app.post("/api/intelligence/face/persons/{person_id}/split")
+        async def intel_face_person_split(
+            person_id: int,
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            face_ids = payload.get("face_ids") or []
+            new_name = str(payload.get("name") or "")
+            if not isinstance(face_ids, list) or not face_ids:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="缺少 face_ids"
+                )
+            new_id = await clusterer.split_persons(
+                int(person_id),
+                [int(v) for v in face_ids],
+                new_name=new_name,
+            )
+            return {"new_person_id": new_id}
+
+        @self._app.delete("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_delete(
+            person_id: int,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            await store.delete_person(int(person_id))
+            return {"deleted": True}
+
+        @self._app.get("/api/intelligence/face/{face_id}/thumb")
+        async def intel_face_thumb(
+            face_id: int,
+            request: Request,
+        ) -> FileResponse:
+            if not await self._can_access_media_file(request, "*"):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="未认证")
+            _, store = await _require_face_store()
+            face = await store.get_face(int(face_id))
+            if face is None or not face.thumb_path:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="缩略图不存在")
+            path = Path(face.thumb_path)
+            if not path.is_file():
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="缩略图文件丢失")
+            return FileResponse(path=path, media_type="image/jpeg")

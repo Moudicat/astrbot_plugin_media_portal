@@ -168,10 +168,20 @@ class DownloaderSettings:
 
 
 @dataclass(slots=True)
+class IntelligenceSettings:
+    enabled: bool = False
+    hf_mirror_url: str = ""
+    clip_enabled: bool = False
+    face_enabled: bool = False
+    max_concurrent_downloads: int = 1
+
+
+@dataclass(slots=True)
 class PluginSettings:
     webui: WebUISettings
     storage: StorageSettings
     downloader: DownloaderSettings
+    intelligence: IntelligenceSettings
     astrbot_data_dir: Path
     plugin_data_dir: Path
     media_root: Path
@@ -218,6 +228,7 @@ def load_plugin_settings(
     webui_raw = _read_section(raw_config, "webui")
     storage_raw = _read_section(raw_config, "storage")
     downloader_raw = _read_section(raw_config, "downloader")
+    intelligence_raw = _read_section(raw_config, "intelligence")
 
     # 兼容旧平铺配置
     if not webui_raw and "webui_port" in raw_config:
@@ -264,6 +275,18 @@ def load_plugin_settings(
         ),
         local_path_whitelist=local_path_whitelist,
     )
+    intelligence = IntelligenceSettings(
+        enabled=_as_bool(intelligence_raw.get("enabled"), False),
+        hf_mirror_url=_normalize_base_url(
+            _as_str(intelligence_raw.get("hf_mirror_url"), "")
+        ),
+        clip_enabled=_as_bool(intelligence_raw.get("clip_enabled"), False),
+        face_enabled=_as_bool(intelligence_raw.get("face_enabled"), False),
+        max_concurrent_downloads=max(
+            1,
+            min(3, _as_int(intelligence_raw.get("max_concurrent_downloads"), 1, minimum=1)),
+        ),
+    )
 
     astrbot_data_dir = Path(get_astrbot_data_path()).resolve()
     if plugin_data_dir is None:
@@ -292,6 +315,7 @@ def load_plugin_settings(
         webui=webui,
         storage=storage,
         downloader=downloader,
+        intelligence=intelligence,
         astrbot_data_dir=astrbot_data_dir,
         plugin_data_dir=plugin_data_dir,
         media_root=media_root,

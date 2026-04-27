@@ -1,5 +1,42 @@
 # 更新日志
 
+## [0.4.0] - 2026-04-27
+
+### 新增 - 智能能力套件（可选）
+- **TOTP 双因素登录**：基于 `pyotp` + `qrcode`，支持 Google Authenticator / 1Password / Bitwarden 等；
+  - 新增 `/api/totp/*` 路由（绑定、校验、停用、恢复码再生），WebUI「设置 → 账号安全 · TOTP」分区可视化操作；
+  - 一次性恢复码（8 个，bcrypt 哈希存盘），登录页支持 `挑战 token + 6 位动态码 / 恢复码` 双步验证；
+  - 状态文件 `data/plugin_data/.../.totp_state` 单独落盘（权限 0o600），不进 SQLite、不进备份归档；
+  - 配置项：`webui.totp_enabled` / `totp_issuer` / `totp_account`，依赖 `requirements-totp.txt`。
+- **CLIP 语义检索（Chinese-CLIP ViT-B/16, ONNX）**：
+  - 全新 `core/intelligence/clip/` 子系统：`engine`（ONNX Runtime 推理）/ `preprocess`（中文 CLIP 预处理）/ `tokenize`（中文分词）/ `index`（SQLite 向量库）/ `worker`（后台批量索引）；
+  - REST API：`/api/intelligence/status` / `clip/scan` / `clip/search` 等；
+  - 新增 LLM 工具 `search_media_semantic(query, limit, category)`，仅在模型就绪时注册到 LLM；
+  - 依赖 `requirements-clip.txt`（onnxruntime + tokenizers + Pillow + numpy）。
+- **人脸检测 / 识别 / 聚类（InsightFace `buffalo_s`, ONNX）**：
+  - 全新 `core/intelligence/face/` 子系统：`engine`（RetinaFace + ArcFace 推理）/ `index`（人脸 / 人物 / 缩略图 SQLite 库）/ `cluster`（在线增量分配 + 周期性 DBSCAN 全量聚类）/ `worker`（后台扫描）；
+  - REST API：人物列表 / 详情 / 改名 / 删除 / 合并 / 拆分 / 重新聚类 / 人脸缩略图直链；
+  - WebUI 新增「人脸」一级菜单（`FacesView`、`FacePersonDrawer`），支持批量合并、单人物拆分、改名等可视化操作；
+  - 新增 LLM 工具 `list_face_persons(limit)` / `find_media_with_person(person, limit)`；
+  - 依赖 `requirements-face.txt`（insightface + scikit-learn + opencv-python-headless）。
+- **统一模型管理**：
+  - `core/intelligence/manager.py` 中 `IntelligenceManager` 统一管理 CLIP / Face 生命周期、模型下载、依赖检测、后台 worker；
+  - `ModelDownloader` 支持断点续传、SHA256 校验、`hf_mirror_url` 自动重写、并发下载上限；
+  - 新增 `intelligence` 配置分组：`enabled` / `clip_enabled` / `face_enabled` / `hf_mirror_url` / `max_concurrent_downloads`；
+  - 模型与索引文件落在 `data/plugin_data/.../intelligence/`。
+
+### 新增 - 调试与开发体验
+- `scripts/debug_webui.py` 新增 `--totp` / `--no-totp` / `--totp-issuer` / `--totp-account`，本地调试默认开启 TOTP；
+- 后台设置面板加宽（`SettingsDialog.vue`），适配新增的 TOTP / 智能能力分区。
+
+### 测试
+- 新增 `test_totp_store.py` / `test_webui_totp_login.py` / `test_intelligence_models.py` / `test_clip_engine.py` / `test_clip_index.py` / `test_face_index.py` / `test_face_worker.py` / `test_webui_intelligence_routes.py`，新增覆盖约 50+ 用例；
+- 全套测试 160 通过 / 1 跳过。
+
+### 文档
+- `docs/rfc-2026-04-intelligence-suite.md`：完整 RFC（设计 + 数据流 + schema + 安全考量）；
+- README 新增「🧠 智能能力（可选）」章节、配置说明 `intelligence` 与新 LLM 工具列表。
+
 ## [0.3.1] - 2026-04-21
 
 ### 新增

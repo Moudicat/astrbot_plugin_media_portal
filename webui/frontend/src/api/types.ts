@@ -97,6 +97,15 @@ export interface LoginChallengeResp {
 
 export type LoginResp = LoginSessionResp | LoginChallengeResp;
 
+export interface IntelligenceSummary {
+  feature_enabled: boolean;
+  clip_enabled: boolean;
+  face_enabled: boolean;
+  clip_ready: boolean;
+  face_ready: boolean;
+  hf_mirror_url: string;
+}
+
 export interface PortalConfig {
   access_urls: string[];
   public_base_url: string;
@@ -108,6 +117,7 @@ export interface PortalConfig {
   data_token?: string;
   totp_feature_enabled?: boolean;
   totp_active?: boolean;
+  intelligence?: IntelligenceSummary;
 }
 
 export interface TotpStatus {

@@ -41,6 +41,7 @@
           :view-mode="viewMode"
           :total-count="media.stats.total_count || 0"
           :can-data-browse="config.canDataBrowse"
+          :can-face-browse="config.canFaceBrowse"
           @switch-mode="switchMode"
           @select-category="selectCategory"
           @open-trash="openTrashView"
@@ -211,7 +212,11 @@ const categoryRenameTarget = ref<CategoryItem | null>(null);
 const batchCategoryVisible = ref(false);
 const settingsVisible = ref(false);
 
-const viewMode = computed(() => (route.name === "data" ? "data" : "media"));
+const viewMode = computed(() => {
+  if (route.name === "data") return "data";
+  if (route.name === "faces") return "face";
+  return "media";
+});
 
 function routeCategoryValue(raw: unknown): string {
   if (Array.isArray(raw)) return String(raw[0] || "");
@@ -323,6 +328,9 @@ function switchMode(mode: string) {
     dataBrowser.fetchTree(dataBrowser.path || "").catch((error) =>
       toast.push((error as Error).message, "error"),
     );
+  } else if (mode === "face") {
+    if (!config.canFaceBrowse) return;
+    router.push({ name: "faces" });
   } else {
     router.push({
       name: "media",

@@ -1,6 +1,6 @@
 name: astrbot_plugin_media_portal
 display_name: Media Portal
 desc: 为 AI 与用户打造的多媒体门户：支持 AI 智能分类收藏，集成音视频预览播放与可视化管理的 AstrBot 插件
-version: v0.3.1
+version: v0.4.0
 author: Moudicat
 repo: https://github.com/Moudicat/astrbot_plugin_media_portal

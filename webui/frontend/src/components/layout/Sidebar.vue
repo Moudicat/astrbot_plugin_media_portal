@@ -19,6 +19,16 @@
         <Icon name="folder-tree" :size="15" />
         {{ $t("nav.data") }}
       </button>
+      <button
+        v-if="canFaceBrowse"
+        class="sidebar-tab"
+        :class="{ active: viewMode === 'face' }"
+        :title="$t('sidebar.faceDesc')"
+        @click="$emit('switch-mode', 'face')"
+      >
+        <Icon name="user" :size="15" />
+        {{ $t("nav.face") }}
+      </button>
     </div>
 
     <div v-if="viewMode === 'media'" class="sidebar-section">
@@ -65,6 +75,15 @@
       </ul>
     </div>
 
+    <div v-else-if="viewMode === 'face'" class="sidebar-section">
+      <div class="sidebar-header">
+        <h3>{{ $t("sidebar.faceTitle") }}</h3>
+      </div>
+      <p class="muted" style="padding: 0 4px">
+        {{ $t("sidebar.faceDesc") }}
+      </p>
+    </div>
+
     <div v-else class="sidebar-section">
       <div class="sidebar-header">
         <h3>{{ $t("sidebar.dataTitle") }}</h3>
@@ -87,6 +106,7 @@ interface Props {
   viewMode?: string;
   totalCount?: number;
   canDataBrowse?: boolean;
+  canFaceBrowse?: boolean;
 }
 
 withDefaults(defineProps<Props>(), {
@@ -95,6 +115,7 @@ withDefaults(defineProps<Props>(), {
   viewMode: "media",
   totalCount: 0,
   canDataBrowse: true,
+  canFaceBrowse: false,
 });
 
 const emit = defineEmits<{

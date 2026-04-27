@@ -103,6 +103,42 @@
       }
     }
   },
+  "intelligence": {
+    "description": "智能能力（CLIP / 人脸等本地模型）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用智能能力总开关",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时 CLIP / 人脸等所有本地模型功能不会被加载，对外接口与 LLM 工具均不可用。"
+      },
+      "hf_mirror_url": {
+        "description": "HuggingFace 镜像地址",
+        "type": "string",
+        "default": "",
+        "hint": "留空表示直连 huggingface.co。国内可填 https://hf-mirror.com 等镜像，下载模型时会自动改写。"
+      },
+      "clip_enabled": {
+        "description": "启用 CLIP 语义检索",
+        "type": "bool",
+        "default": false,
+        "hint": "开启前请在设置面板下载 Chinese-CLIP ViT-B/16 模型并安装 requirements-clip.txt。"
+      },
+      "face_enabled": {
+        "description": "启用人脸检测 / 识别",
+        "type": "bool",
+        "default": false,
+        "hint": "开启前请在设置面板下载 InsightFace buffalo_s 模型并安装 requirements-face.txt。"
+      },
+      "max_concurrent_downloads": {
+        "description": "模型并发下载数",
+        "type": "int",
+        "default": 1,
+        "hint": "为避免占用带宽，默认串行下载；取值范围 1~3。"
+      }
+    }
+  },
   "downloader": {
     "description": "下载配置",
     "type": "object",

@@ -36,6 +36,12 @@ const routes: RouteRecordRaw[] = [
         name: "duplicates",
         component: () => import("@/views/DuplicatesView.vue"),
       },
+      {
+        path: "/faces",
+        name: "faces",
+        component: () => import("@/views/FacesView.vue"),
+        meta: { requireFace: true },
+      },
     ],
   },
   { path: "/:pathMatch(.*)*", redirect: "/media" },
@@ -60,6 +66,12 @@ router.beforeEach((to) => {
   if (to.meta.requireData) {
     const config = useConfigStore();
     if (config.config && config.config.expose_astrbot_data === false) {
+      return { name: "media" };
+    }
+  }
+  if (to.meta.requireFace) {
+    const config = useConfigStore();
+    if (!config.canFaceBrowse) {
       return { name: "media" };
     }
   }
