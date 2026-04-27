@@ -20,8 +20,13 @@
           <div class="drawer-content">
             <div class="drawer-preview-wrap">
               <div class="drawer-preview" @click="$emit('preview', media)">
-                <img v-if="media.kind === 'image'" :src="fileUrl" :alt="media.filename" />
-                <video v-else-if="media.kind === 'video'" :src="fileUrl" muted preload="metadata"></video>
+                <img
+                  v-if="media.kind === 'image'"
+                  :src="previewSrc"
+                  :alt="media.filename"
+                  @error="handlePreviewError"
+                />
+                <video v-else-if="media.kind === 'video'" :src="previewSrc" muted preload="metadata"></video>
                 <div v-else class="audio-placeholder">
                   <div class="disc">
                     <Icon :name="media.kind === 'audio' ? 'music' : 'file'" :size="24" />
@@ -139,7 +144,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
-import { buildMediaDirectUrl } from "@/utils/url";
+import { buildMediaDirectUrl, buildThumbUrl } from "@/utils/url";
 import { formatDuration, formatTimestamp } from "@/utils/format";
 import type { CategoryItem, MediaItem } from "@/api/types";
 
@@ -171,10 +176,12 @@ const category = ref("");
 const tags = ref("");
 const filename = ref("");
 const originalFilename = ref("");
+const previewError = ref(false);
 
 watch(
   () => props.media,
   (value) => {
+    previewError.value = false;
     if (!value) {
       description.value = "";
       category.value = "";
@@ -211,6 +218,21 @@ const fileUrl = computed(() => {
   if (!props.media) return "";
   if (props.media.public_url) return props.media.public_url;
   return buildMediaDirectUrl(props.media.category, props.media.filename, props.readonlyToken);
+});
+const directUrl = computed(() => {
+  if (!props.media) return "";
+  return buildMediaDirectUrl(props.media.category, props.media.filename, props.readonlyToken);
+});
+const thumbSrc = computed(() => {
+  if (!props.media) return "";
+  return buildThumbUrl(props.media.category, props.media.filename, props.readonlyToken, 480);
+});
+const previewSrc = computed(() => {
+  if (!props.media) return "";
+  if (props.media.kind === "image") {
+    return previewError.value ? directUrl.value : thumbSrc.value;
+  }
+  return directUrl.value;
 });
 const sizeLabel = computed(() => {
   if (!props.media) return "-";
@@ -250,6 +272,10 @@ const kindIcon = computed(() => {
   if (k === "audio") return "music";
   return "file";
 });
+
+function handlePreviewError() {
+  if (!previewError.value) previewError.value = true;
+}
 
 function save() {
   if (!props.media) return;

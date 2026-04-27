@@ -47,25 +47,36 @@
 
 ## 🖼️ 截图
 
-<details>
-<summary><strong>后台管理界面</strong></summary>
-<br />
-<img width="1274" height="981" alt="085251bc35b6c5aa4d7c2304d81839e6" src="https://github.com/user-attachments/assets/a9184815-114b-458b-be5c-8cb32c634e95" />
-</details>
-
-<details>
-<summary><strong>添加媒体文件进媒体库</strong></summary>
-<br />
-<img width="735" height="90" alt="image" src="https://github.com/user-attachments/assets/9d952ca5-f216-4491-aed1-4158bf87f259" />
-<br />
-<img width="904" height="535" alt="image" src="https://github.com/user-attachments/assets/f4d2faef-6b78-4cb2-9d37-212b56a77c1d" />
-</details>
-
-<details>
-<summary><strong>从媒体库读取/发送</strong></summary>
-<br />
-<img width="1200" height="1246" alt="136aeefd05caa91b52ebb7b2fb34f560" src="https://github.com/user-attachments/assets/58243bc1-db22-4603-a3e6-32df5f23cddd" />
-</details>
+<table>
+  <thead>
+    <tr>
+      <th align="center">后台管理界面</th>
+      <th align="center">添加媒体文件进媒体库</th>
+      <th align="center">从媒体库读取/发送</th>
+      <th align="center">设置</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr valign="top">
+      <td align="center">
+        <img width="100%" alt="后台管理界面 - 列表" src="https://github.com/user-attachments/assets/ed27472b-eccf-45be-a323-ee9f921b5506" />
+        <br /><br />
+        <img width="100%" alt="后台管理界面 - 详情" src="https://github.com/user-attachments/assets/3d74a2b1-81fe-4791-aee5-45047f01850f" />
+      </td>
+      <td align="center">
+        <img width="100%" alt="添加媒体入口" src="https://github.com/user-attachments/assets/9d952ca5-f216-4491-aed1-4158bf87f259" />
+        <br /><br />
+        <img width="100%" alt="添加媒体表单" src="https://github.com/user-attachments/assets/f4d2faef-6b78-4cb2-9d37-212b56a77c1d" />
+      </td>
+      <td align="center">
+        <img width="100%" alt="从媒体库读取/发送" src="https://github.com/user-attachments/assets/58243bc1-db22-4603-a3e6-32df5f23cddd" />
+      </td>
+      <td align="center">
+        <img width="100%" alt="设置" src="https://github.com/user-attachments/assets/034c27cb-5e25-469c-9bad-614f178d7c3b" />
+      </td>
+    </tr>
+  </tbody>
+</table>
 
 ## 📦 安装方式
 
