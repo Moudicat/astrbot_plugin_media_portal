@@ -52,27 +52,23 @@
     <tr>
       <th align="center">后台管理界面</th>
       <th align="center">添加媒体文件进媒体库</th>
-      <th align="center">从媒体库读取/发送</th>
-      <th align="center">设置</th>
+      <th align="center">从媒体库读取 / 发送</th>
     </tr>
   </thead>
   <tbody>
     <tr valign="top">
       <td align="center">
-        <img width="100%" alt="后台管理界面 - 列表" src="https://github.com/user-attachments/assets/ed27472b-eccf-45be-a323-ee9f921b5506" />
+        <img width="100%" alt="后台管理界面" src="https://github.com/user-attachments/assets/57b13b06-ac3a-4d33-b02c-3d4fa385b408" />
         <br /><br />
-        <img width="100%" alt="后台管理界面 - 详情" src="https://github.com/user-attachments/assets/3d74a2b1-81fe-4791-aee5-45047f01850f" />
+        <img width="100%" alt="后台管理界面" src="https://github.com/user-attachments/assets/c45d6b60-f75c-4b54-89c9-21110b9689e6" />
       </td>
       <td align="center">
-        <img width="100%" alt="添加媒体入口" src="https://github.com/user-attachments/assets/9d952ca5-f216-4491-aed1-4158bf87f259" />
+        <img width="100%" alt="添加媒体文件" src="https://github.com/user-attachments/assets/ee3bd705-2f64-4832-85a1-1d341dc8f449" />
         <br /><br />
-        <img width="100%" alt="添加媒体表单" src="https://github.com/user-attachments/assets/f4d2faef-6b78-4cb2-9d37-212b56a77c1d" />
+        <img width="100%" alt="添加媒体文件" src="https://github.com/user-attachments/assets/8af545e7-26aa-4432-82ff-31389f6f255f" />
       </td>
       <td align="center">
-        <img width="100%" alt="从媒体库读取/发送" src="https://github.com/user-attachments/assets/58243bc1-db22-4603-a3e6-32df5f23cddd" />
-      </td>
-      <td align="center">
-        <img width="100%" alt="设置" src="https://github.com/user-attachments/assets/034c27cb-5e25-469c-9bad-614f178d7c3b" />
+        <img width="100%" alt="从媒体库读取 / 发送" src="https://github.com/user-attachments/assets/a00e9ba3-f5b2-47c0-a6b4-ea833cf81f65" />
       </td>
     </tr>
   </tbody>
