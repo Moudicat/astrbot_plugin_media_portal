@@ -10,6 +10,13 @@ from .models import ModelFile, ModelSpec
 
 # Chinese-CLIP ViT-B/16 (ONNX, by Xenova)
 # https://huggingface.co/Xenova/chinese-clip-vit-base-patch16
+#
+# 仓库由 transformers.js 团队（Hugging Face 官方）通过 🤗 Optimum 从
+# OFA-Sys/chinese-clip-vit-base-patch16 导出。当前 onnx/ 子目录只提供
+# 「合并图」（同时含 vision + text 编码器，按输入名分发），不再提供历史
+# 版本的 text_model / vision_model 拆分文件。我们选用 int8 量化后的
+# ``model_quantized.onnx``（约 190 MB），在保持中文检索效果的同时显著降低
+# 体积与加载时间，配套的 tokenizer / preprocessor / config 也一并下载。
 _CLIP_BASE_URL = (
     "https://huggingface.co/Xenova/chinese-clip-vit-base-patch16/resolve/main"
 )
@@ -34,12 +41,8 @@ CLIP_MODEL_SPEC = ModelSpec(
     ),
     files=(
         ModelFile(
-            relative_path="onnx/text_model_quantized.onnx",
-            url=f"{_CLIP_BASE_URL}/onnx/text_model_quantized.onnx",
-        ),
-        ModelFile(
-            relative_path="onnx/vision_model_quantized.onnx",
-            url=f"{_CLIP_BASE_URL}/onnx/vision_model_quantized.onnx",
+            relative_path="onnx/model_quantized.onnx",
+            url=f"{_CLIP_BASE_URL}/onnx/model_quantized.onnx",
         ),
         ModelFile(
             relative_path="tokenizer.json",
@@ -58,6 +61,11 @@ CLIP_MODEL_SPEC = ModelSpec(
             url=f"{_CLIP_BASE_URL}/preprocessor_config.json",
         ),
         ModelFile(
+            relative_path="special_tokens_map.json",
+            url=f"{_CLIP_BASE_URL}/special_tokens_map.json",
+            required=False,
+        ),
+        ModelFile(
             relative_path="config.json",
             url=f"{_CLIP_BASE_URL}/config.json",
             required=False,
@@ -67,8 +75,18 @@ CLIP_MODEL_SPEC = ModelSpec(
 
 
 # InsightFace buffalo_s (检测 + 识别 + 关键点)
-# https://huggingface.co/immich-app/buffalo_s
-_FACE_BASE_URL = "https://huggingface.co/immich-app/buffalo_s/resolve/main"
+#
+# 注意：immich-app/buffalo_s 仓库虽然名字里有 buffalo_s，但**实际只**提供
+# ``detection/model.onnx`` 与 ``recognition/model.onnx`` 两个文件，
+# 直接对外的 ``1k3d68.onnx`` / ``2d106det.onnx`` 等会 404。
+#
+# 这里改用 deepghs/insightface 仓库的 ``buffalo_s`` 子目录，包含完整 5 个 ONNX
+# （``1k3d68 / 2d106det / det_500m / genderage / w600k_mbf``），与 InsightFace
+# 官方 ``buffalo_s.zip`` 的内容一致，FaceAnalysis 可以直接拿来用。
+# https://huggingface.co/deepghs/insightface/tree/main/buffalo_s
+_FACE_BASE_URL = (
+    "https://huggingface.co/deepghs/insightface/resolve/main/buffalo_s"
+)
 
 FACE_MODEL_KEY = "insightface-buffalo-s"
 FACE_MODEL_SPEC = ModelSpec(

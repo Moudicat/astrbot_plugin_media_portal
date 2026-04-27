@@ -143,6 +143,9 @@ from astrbot_plugin_media_portal.core import (  # noqa: E402  (必须后置)
     MediaManager,
     load_plugin_settings,
 )
+from astrbot_plugin_media_portal.core.intelligence import (  # noqa: E402
+    IntelligenceManager,
+)
 from astrbot_plugin_media_portal.webui import WebUIServer  # noqa: E402
 
 
@@ -163,6 +166,11 @@ def _build_raw_config(
     totp_enabled: bool,
     totp_issuer: str,
     totp_account: str,
+    intelligence_enabled: bool,
+    clip_enabled: bool,
+    face_enabled: bool,
+    hf_mirror_url: str,
+    max_concurrent_downloads: int,
 ) -> dict[str, Any]:
     return {
         "webui": {
@@ -187,6 +195,13 @@ def _build_raw_config(
             "allowed_kinds": ["image", "video", "audio"],
             "default_move_local": True,
         },
+        "intelligence": {
+            "enabled": intelligence_enabled,
+            "clip_enabled": clip_enabled,
+            "face_enabled": face_enabled,
+            "hf_mirror_url": hf_mirror_url,
+            "max_concurrent_downloads": max_concurrent_downloads,
+        },
     }
 
 
@@ -205,7 +220,9 @@ def _resolve_dev_paths(data_dir: str, astrbot_data: str) -> tuple[Path, Path]:
     return plugin_data, astrbot_data_path
 
 
-def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
+def _build_server(
+    args: argparse.Namespace,
+) -> tuple[WebUIServer, MediaManager, IntelligenceManager]:
     plugin_data, astrbot_data = _resolve_dev_paths(args.data_dir, args.astrbot_data)
     os.environ["MP_DEBUG_ASTRBOT_DATA"] = str(astrbot_data)
 
@@ -220,6 +237,11 @@ def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
         totp_enabled=bool(getattr(args, "totp_enabled", True)),
         totp_issuer=str(getattr(args, "totp_issuer", "Media Portal (Debug)")),
         totp_account=str(getattr(args, "totp_account", "debug-admin")),
+        intelligence_enabled=bool(getattr(args, "intelligence_enabled", False)),
+        clip_enabled=bool(getattr(args, "clip_enabled", False)),
+        face_enabled=bool(getattr(args, "face_enabled", False)),
+        hf_mirror_url=str(getattr(args, "hf_mirror", "") or ""),
+        max_concurrent_downloads=int(getattr(args, "max_concurrent_downloads", 1) or 1),
     )
     settings = load_plugin_settings(raw_config, plugin_data_dir=plugin_data)
 
@@ -240,13 +262,22 @@ def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
         max_file_size_mb=settings.downloader.max_file_size_mb,
         default_move_local=settings.downloader.default_move_local,
     )
+    intelligence_manager = IntelligenceManager(
+        plugin_data_dir=settings.plugin_data_dir,
+        feature_enabled=settings.intelligence.enabled,
+        clip_enabled=settings.intelligence.clip_enabled,
+        face_enabled=settings.intelligence.face_enabled,
+        hf_mirror_url=settings.intelligence.hf_mirror_url,
+        max_concurrent_downloads=settings.intelligence.max_concurrent_downloads,
+    )
     server = WebUIServer(
         media_manager=media_manager,
         category_manager=category_manager,
         config=raw_config["webui"],
         data_root=settings.astrbot_data_dir,
+        intelligence_manager=intelligence_manager,
     )
-    return server, media_manager
+    return server, media_manager, intelligence_manager
 
 
 async def _prepare_server(media_manager: MediaManager) -> None:
@@ -299,7 +330,7 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
 
 
 async def _run_forever(args: argparse.Namespace) -> None:
-    server, media_manager = _build_server(args)
+    server, media_manager, intelligence_manager = _build_server(args)
     await _prepare_server(media_manager)
     _print_banner(server, args)
     await server.start()
@@ -310,6 +341,8 @@ async def _run_forever(args: argparse.Namespace) -> None:
         pass
     finally:
         await server.stop()
+        with contextlib.suppress(Exception):
+            await intelligence_manager.shutdown()
         await media_manager.close()
 
 
@@ -332,13 +365,20 @@ def _args_from_env() -> argparse.Namespace:
         totp_enabled=os.environ.get("MP_DEBUG_TOTP_ENABLED", "1") == "1",
         totp_issuer=os.environ.get("MP_DEBUG_TOTP_ISSUER", "Media Portal (Debug)"),
         totp_account=os.environ.get("MP_DEBUG_TOTP_ACCOUNT", "debug-admin"),
+        intelligence_enabled=os.environ.get("MP_DEBUG_INTELLIGENCE_ENABLED", "0") == "1",
+        clip_enabled=os.environ.get("MP_DEBUG_CLIP_ENABLED", "0") == "1",
+        face_enabled=os.environ.get("MP_DEBUG_FACE_ENABLED", "0") == "1",
+        hf_mirror=os.environ.get("MP_DEBUG_HF_MIRROR", ""),
+        max_concurrent_downloads=int(
+            os.environ.get("MP_DEBUG_INTELLIGENCE_MAX_CONCURRENT", "1") or "1"
+        ),
     )
 
 
 def create_app():
     """uvicorn 工厂函数，供 ``--reload`` 模式使用。"""
     args = _args_from_env()
-    server, media_manager = _build_server(args)
+    server, media_manager, intelligence_manager = _build_server(args)
 
     app = server.app
     _print_banner(server, args)
@@ -358,6 +398,8 @@ def create_app():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
+                with contextlib.suppress(Exception):
+                    await intelligence_manager.shutdown()
                 await media_manager.close()
 
     app.router.lifespan_context = _lifespan
@@ -393,6 +435,19 @@ def _run_with_reload(args: argparse.Namespace) -> None:
     os.environ["MP_DEBUG_TOTP_ENABLED"] = "1" if args.totp_enabled else "0"
     os.environ["MP_DEBUG_TOTP_ISSUER"] = args.totp_issuer or "Media Portal (Debug)"
     os.environ["MP_DEBUG_TOTP_ACCOUNT"] = args.totp_account or "debug-admin"
+    os.environ["MP_DEBUG_INTELLIGENCE_ENABLED"] = (
+        "1" if getattr(args, "intelligence_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_CLIP_ENABLED"] = (
+        "1" if getattr(args, "clip_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_FACE_ENABLED"] = (
+        "1" if getattr(args, "face_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_HF_MIRROR"] = str(getattr(args, "hf_mirror", "") or "")
+    os.environ["MP_DEBUG_INTELLIGENCE_MAX_CONCURRENT"] = str(
+        int(getattr(args, "max_concurrent_downloads", 1) or 1)
+    )
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     parent_str = str(PACKAGE_PARENT)
     if parent_str not in existing_pythonpath.split(os.pathsep):
@@ -493,6 +548,47 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--totp-account",
         default="debug-admin",
         help="TOTP otpauth:// 账号名（在 Authenticator 中显示）",
+    )
+    intel_group = parser.add_mutually_exclusive_group()
+    intel_group.add_argument(
+        "--intelligence",
+        dest="intelligence_enabled",
+        action="store_true",
+        default=False,
+        help="启用智能能力总开关（CLIP / 人脸子能力仍需各自开启）",
+    )
+    intel_group.add_argument(
+        "--no-intelligence",
+        dest="intelligence_enabled",
+        action="store_false",
+        help="关闭智能能力总开关（默认）",
+    )
+    parser.add_argument(
+        "--clip",
+        dest="clip_enabled",
+        action="store_true",
+        default=False,
+        help="启用 CLIP 子能力（仅决定 UI 标记，模型仍需手动下载）",
+    )
+    parser.add_argument(
+        "--face",
+        dest="face_enabled",
+        action="store_true",
+        default=False,
+        help="启用人脸子能力（仅决定 UI 标记，模型仍需手动下载）",
+    )
+    parser.add_argument(
+        "--hf-mirror",
+        dest="hf_mirror",
+        default="",
+        help="HuggingFace 镜像 URL（空表示直连，例如 https://hf-mirror.com）",
+    )
+    parser.add_argument(
+        "--intelligence-max-concurrent",
+        dest="max_concurrent_downloads",
+        type=int,
+        default=1,
+        help="智能模型并发下载数（1~3，默认 1）",
     )
     return parser.parse_args(argv)
 

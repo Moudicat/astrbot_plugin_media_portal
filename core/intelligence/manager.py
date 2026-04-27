@@ -452,6 +452,66 @@ class IntelligenceManager:
     def face_thumb_dir(self) -> Path:
         return self._face_thumb_dir
 
+    async def cleanup_face_orphans(
+        self, valid_media_ids: Iterable[int]
+    ) -> int:
+        """删除已经在媒体库消失的人脸记录。"""
+        store = await self.get_face_store()
+        if store is None:
+            return 0
+        valid = {int(mid) for mid in valid_media_ids}
+        existing = await store.list_indexed_media_ids()
+        all_orphan_face_ids = await store.list_orphan_face_records(valid)
+        removed = 0
+        for media_id in existing - valid:
+            removed += await store.delete_faces_for_media(media_id)
+        if all_orphan_face_ids:
+            assert store._conn is not None  # noqa: SLF001
+            async with store._lock:  # noqa: SLF001
+                placeholders = ",".join("?" * len(all_orphan_face_ids))
+                await store._conn.execute(  # noqa: SLF001
+                    f"DELETE FROM face_records WHERE id IN ({placeholders})",
+                    [int(fid) for fid in all_orphan_face_ids],
+                )
+                await store._conn.commit()  # noqa: SLF001
+        await store.recount_persons()
+        return removed + len(all_orphan_face_ids)
+
+    async def regenerate_face_thumbs(
+        self,
+        media_resolver: Callable[[int], Awaitable[str | None]],
+        *,
+        force: bool = True,
+    ) -> tuple[int, int]:
+        """重建所有人脸缩略图。返回 ``(成功数, 失败数)``。"""
+        if not self.face_enabled:
+            return 0, 0
+        store = await self.get_face_store()
+        if store is None:
+            return 0, 0
+        from .face import FaceIndexWorker
+
+        if self._face_worker is None:
+            engine = await self.get_face_engine()
+            clusterer = await self.get_face_clusterer()
+            if engine is None or clusterer is None:
+                return 0, 0
+
+            async def _empty_iter():
+                return []
+
+            self._face_worker = FaceIndexWorker(
+                store=store,
+                engine=engine,
+                clusterer=clusterer,
+                iter_image_records=_empty_iter,
+                thumb_dir=self._face_thumb_dir,
+                model_version=FACE_MODEL_KEY,
+            )
+        return await self._face_worker.regenerate_thumbs(
+            media_resolver, force=force
+        )
+
     # ----- 状态查询 -----
 
     def snapshot(self, model_key: str) -> ModelSnapshot | None:

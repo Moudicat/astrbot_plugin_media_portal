@@ -471,6 +471,48 @@ class FaceIndexStore:
             rows = await cursor.fetchall()
             return {int(row["media_id"]) for row in rows}
 
+    async def list_face_thumb_targets(
+        self,
+    ) -> list[tuple[int, int, tuple[float, float, float, float]]]:
+        """返回 ``[(face_id, media_id, bbox)]``，用于批量重建缩略图。"""
+        async with self._lock:
+            assert self._conn is not None
+            cursor = await self._conn.execute(
+                "SELECT id, media_id, bbox FROM face_records ORDER BY id ASC"
+            )
+            rows = await cursor.fetchall()
+            out: list[tuple[int, int, tuple[float, float, float, float]]] = []
+            for row in rows:
+                try:
+                    bbox_arr = json.loads(row["bbox"]) if row["bbox"] else []
+                except (TypeError, ValueError):
+                    bbox_arr = []
+                if not isinstance(bbox_arr, list) or len(bbox_arr) < 4:
+                    continue
+                bbox = (
+                    float(bbox_arr[0]),
+                    float(bbox_arr[1]),
+                    float(bbox_arr[2]),
+                    float(bbox_arr[3]),
+                )
+                out.append((int(row["id"]), int(row["media_id"]), bbox))
+            return out
+
+    async def list_orphan_face_records(
+        self, valid_media_ids: Iterable[int]
+    ) -> list[int]:
+        """返回所有 media_id 不在 ``valid_media_ids`` 中的 face_id。"""
+        valid = {int(mid) for mid in valid_media_ids}
+        async with self._lock:
+            assert self._conn is not None
+            cursor = await self._conn.execute(
+                "SELECT id, media_id FROM face_records"
+            )
+            rows = await cursor.fetchall()
+            return [
+                int(row["id"]) for row in rows if int(row["media_id"]) not in valid
+            ]
+
     async def mark_scanned(self, media_id: int, face_count: int) -> None:
         async with self._lock:
             assert self._conn is not None

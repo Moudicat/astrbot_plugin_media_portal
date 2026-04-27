@@ -85,7 +85,8 @@
                   :key="face.id"
                   class="face-cell"
                   :class="{ active: selectedFaceIds.has(face.id) }"
-                  @click="toggleFace(face.id)"
+                  :title="$t('face.drawer.previewHint')"
+                  @click="onCellClick(face)"
                 >
                   <img
                     :src="thumbUrl(face.id)"
@@ -101,13 +102,19 @@
                       {{ scorePercent(face.det_score) }}
                     </span>
                   </div>
-                  <input
-                    class="face-cell-check"
-                    type="checkbox"
-                    :checked="selectedFaceIds.has(face.id)"
+                  <button
+                    class="plain face-cell-check"
+                    type="button"
+                    :class="{ on: selectedFaceIds.has(face.id) }"
+                    :title="$t('face.drawer.selectFace')"
+                    :aria-pressed="selectedFaceIds.has(face.id) ? 'true' : 'false'"
                     @click.stop="toggleFace(face.id)"
-                    @change.stop
-                  />
+                  >
+                    <Icon name="check" :size="12" />
+                  </button>
+                  <span class="face-cell-zoom" aria-hidden="true">
+                    <Icon name="zoom-in" :size="14" />
+                  </span>
                 </div>
               </div>
             </section>
@@ -148,6 +155,7 @@ const emit = defineEmits<{
   (e: "split", payload: { personId: number; faceIds: number[] }): void;
   (e: "merge-into", payload: { sourceId: number; targetId: number }): void;
   (e: "refresh"): void;
+  (e: "preview-media", face: FaceItem): void;
 }>();
 
 const renameDraft = ref("");
@@ -196,6 +204,18 @@ function toggleFace(faceId: number) {
   if (next.has(faceId)) next.delete(faceId);
   else next.add(faceId);
   selectedFaceIds.value = next;
+}
+
+function onCellClick(face: FaceItem) {
+  if (selectedFaceIds.value.size > 0) {
+    toggleFace(face.id);
+    return;
+  }
+  if (!face.media || !face.media.filename) {
+    toggleFace(face.id);
+    return;
+  }
+  emit("preview-media", face);
 }
 
 function clearFaceSelection() {
@@ -293,10 +313,13 @@ function commitSplit() {
   cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--line);
-  transition: border-color 0.12s ease, transform 0.12s ease;
+  transition: border-color 0.12s ease, transform 0.12s ease,
+    box-shadow 0.12s ease;
 }
 .face-cell:hover {
   border-color: color-mix(in srgb, var(--primary) 30%, var(--line));
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 .face-cell.active {
   border-color: var(--primary);
@@ -307,6 +330,10 @@ function commitSplit() {
   aspect-ratio: 1;
   object-fit: cover;
   display: block;
+  transition: transform 0.3s ease;
+}
+.face-cell:hover img {
+  transform: scale(1.04);
 }
 .face-cell-meta {
   display: flex;
@@ -323,10 +350,64 @@ function commitSplit() {
   position: absolute;
   top: 6px;
   right: 6px;
-  width: 14px;
-  height: 14px;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(15, 23, 42, 0.5);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   margin: 0;
   cursor: pointer;
+  box-sizing: border-box;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   z-index: 2;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.face-cell:hover .face-cell-check,
+.face-cell.active .face-cell-check,
+.face-cell-check.on {
+  opacity: 1;
+}
+.face-cell-check.on {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.face-cell-check:hover {
+  transform: scale(1.08);
+}
+.face-cell-check :deep(svg) {
+  flex: none;
+  display: block;
+}
+.face-cell-zoom {
+  position: absolute;
+  bottom: 26px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.55);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1;
+}
+.face-cell:hover .face-cell-zoom {
+  opacity: 1;
 }
 </style>

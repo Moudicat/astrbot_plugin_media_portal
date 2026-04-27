@@ -45,6 +45,7 @@ import {
   Clock,
   Copy,
   CornerUpLeft,
+  Cpu,
   Database,
   Download,
   Eraser,
@@ -112,6 +113,7 @@ import {
   Volume2,
   VolumeX,
   X,
+  ZoomIn,
 } from "lucide-vue-next";
 
 interface Props {
@@ -144,6 +146,7 @@ const REGISTRY: Record<string, Component> = {
   clock: Clock,
   copy: Copy,
   "corner-up-left": CornerUpLeft,
+  cpu: Cpu,
   database: Database,
   download: Download,
   eraser: Eraser,
@@ -212,6 +215,7 @@ const REGISTRY: Record<string, Component> = {
   "volume-2": Volume2,
   "volume-x": VolumeX,
   x: X,
+  "zoom-in": ZoomIn,
 };
 
 const resolved = computed<Component | null>(() => REGISTRY[props.name] || null);

@@ -3,35 +3,25 @@
     <div class="sidebar-tabs" role="tablist">
       <button
         class="sidebar-tab"
-        :class="{ active: viewMode === 'media' }"
+        :class="{ active: viewMode === 'media' || viewMode === 'face' }"
         @click="$emit('switch-mode', 'media')"
       >
         <Icon name="library" :size="15" />
         {{ $t("nav.media") }}
       </button>
       <button
+        v-if="canDataBrowse"
         class="sidebar-tab"
         :class="{ active: viewMode === 'data' }"
-        :disabled="!canDataBrowse"
-        :title="canDataBrowse ? $t('sidebar.dataDesc') : $t('dataBrowser.notEnabledHint')"
+        :title="$t('sidebar.dataDesc')"
         @click="$emit('switch-mode', 'data')"
       >
         <Icon name="folder-tree" :size="15" />
         {{ $t("nav.data") }}
       </button>
-      <button
-        v-if="canFaceBrowse"
-        class="sidebar-tab"
-        :class="{ active: viewMode === 'face' }"
-        :title="$t('sidebar.faceDesc')"
-        @click="$emit('switch-mode', 'face')"
-      >
-        <Icon name="user" :size="15" />
-        {{ $t("nav.face") }}
-      </button>
     </div>
 
-    <div v-if="viewMode === 'media'" class="sidebar-section">
+    <div v-if="viewMode === 'media' || viewMode === 'face'" class="sidebar-section">
       <div class="sidebar-header">
         <h3>{{ $t("sidebar.categoryTotal", { count: categories.length }) }}</h3>
         <div class="sidebar-tools">
@@ -49,6 +39,16 @@
         </div>
       </div>
       <ul class="category-list">
+        <li
+          v-if="canFaceBrowse"
+          class="category-item face-entry"
+          :class="{ active: viewMode === 'face' }"
+          :title="$t('sidebar.faceDesc')"
+          @click="$emit('switch-mode', 'face')"
+        >
+          <span class="icon-wrap"><Icon name="user" :size="14" /></span>
+          <span class="label">{{ $t("nav.face") }}</span>
+        </li>
         <li
           class="category-item"
           :class="{ active: activeRoute === 'media' && activeCategory === '' }"
@@ -73,15 +73,6 @@
           <span class="count">{{ item.count }}</span>
         </li>
       </ul>
-    </div>
-
-    <div v-else-if="viewMode === 'face'" class="sidebar-section">
-      <div class="sidebar-header">
-        <h3>{{ $t("sidebar.faceTitle") }}</h3>
-      </div>
-      <p class="muted" style="padding: 0 4px">
-        {{ $t("sidebar.faceDesc") }}
-      </p>
     </div>
 
     <div v-else class="sidebar-section">
@@ -174,5 +165,32 @@ function onContext(event: MouseEvent, item: any) {
   color: var(--primary);
   border-color: color-mix(in srgb, var(--primary) 35%, var(--line));
   background: color-mix(in srgb, var(--primary) 14%, var(--surface));
+}
+
+.face-entry {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.face-entry::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -4px;
+  height: 1px;
+  background: var(--line, rgba(148, 163, 184, 0.18));
+}
+
+.face-entry .icon-wrap {
+  color: #db2777;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.face-entry.active .icon-wrap,
+.face-entry.active .icon-wrap :deep(svg) {
+  color: #fff;
 }
 </style>

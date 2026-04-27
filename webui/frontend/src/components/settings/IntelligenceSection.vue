@@ -2,23 +2,33 @@
   <section class="settings-section intelligence-section">
     <h4>{{ $t("settings.intelligence.title") }}</h4>
 
-    <div class="settings-row">
-      <div class="label">
-        <strong>{{ $t("settings.intelligence.featureLabel") }}</strong>
-        <small>{{ $t("settings.intelligence.featureHint") }}</small>
-      </div>
-      <div class="settings-actions-row">
-        <label class="switch-inline">
-          <input
-            v-model="featureToggle"
-            type="checkbox"
-            :disabled="busy"
-            @change="onFeatureToggle"
-          />
-          <span>{{ $t("settings.intelligence.featureToggle") }}</span>
-        </label>
-      </div>
-    </div>
+    <ul class="settings-toggle-list intel-master-toggle">
+      <li
+        class="settings-toggle"
+        :class="{ disabled: !featureToggle }"
+        role="switch"
+        :aria-checked="featureToggle ? 'true' : 'false'"
+        :aria-disabled="busy ? 'true' : 'false'"
+        @click="onFeatureToggle"
+      >
+        <div class="settings-toggle-icon">
+          <Icon name="cpu" :size="14" />
+        </div>
+        <div class="settings-toggle-body">
+          <span class="settings-toggle-title">
+            {{ $t("settings.intelligence.featureLabel") }}
+          </span>
+          <span class="settings-toggle-desc">
+            {{ $t("settings.intelligence.featureHint") }}
+          </span>
+        </div>
+        <span
+          class="switch"
+          :class="{ on: featureToggle }"
+          role="presentation"
+        ></span>
+      </li>
+    </ul>
 
     <div class="settings-row">
       <div class="label">
@@ -55,7 +65,11 @@
         <div class="intel-model-head">
           <div class="intel-model-title">
             <span class="intel-model-tag" :class="model.capability">
-              {{ model.capability === "clip" ? $t("settings.intelligence.tagClip") : $t("settings.intelligence.tagFace") }}
+              {{
+                model.capability === "clip"
+                  ? $t("settings.intelligence.tagClip")
+                  : $t("settings.intelligence.tagFace")
+              }}
             </span>
             <strong>{{ model.display_name }}</strong>
           </div>
@@ -66,19 +80,39 @@
 
         <p class="muted small intel-model-desc">{{ model.description }}</p>
 
-        <div class="intel-model-row">
-          <label class="switch-inline">
-            <input
-              type="checkbox"
-              :checked="capabilityToggle(model.capability)"
-              :disabled="busy || !list.feature_enabled"
-              @change="(e) => onCapabilityToggle(model.capability, (e.target as HTMLInputElement).checked)"
-            />
-            <span>{{ $t("settings.intelligence.enableCapability") }}</span>
-          </label>
-          <span v-if="model.last_error" class="intel-error">
-            {{ model.last_error }}
-          </span>
+        <div
+          class="intel-toggle-row"
+          :class="{ disabled: !capabilityToggle(model.capability) }"
+          role="switch"
+          :aria-checked="capabilityToggle(model.capability) ? 'true' : 'false'"
+          :aria-disabled="busy || !list.feature_enabled ? 'true' : 'false'"
+          @click="
+            !busy &&
+              list.feature_enabled &&
+              onCapabilityToggle(
+                model.capability,
+                !capabilityToggle(model.capability),
+              )
+          "
+        >
+          <div class="intel-toggle-body">
+            <span class="intel-toggle-title">
+              {{ $t("settings.intelligence.enableCapability") }}
+            </span>
+            <span class="intel-toggle-desc muted small">
+              {{ $t("settings.intelligence.enableCapabilityHint") }}
+            </span>
+          </div>
+          <span
+            class="switch"
+            :class="{ on: capabilityToggle(model.capability) }"
+            role="presentation"
+          ></span>
+        </div>
+
+        <div v-if="model.last_error" class="intel-error">
+          <Icon name="alert-triangle" :size="13" />
+          <span>{{ model.last_error }}</span>
         </div>
 
         <div v-if="model.status === 'downloading'" class="intel-progress">
@@ -88,15 +122,13 @@
               :style="{ width: `${progressPercent(model)}%` }"
             ></div>
           </div>
-          <small class="muted">
-            {{ progressText(model) }}
-          </small>
+          <small class="muted">{{ progressText(model) }}</small>
         </div>
 
         <div class="intel-actions">
           <button
             v-if="model.status !== 'ready' && model.status !== 'downloading'"
-            class="primary"
+            class="primary sm"
             :disabled="busy"
             @click="downloadOne(model.key)"
           >
@@ -105,7 +137,7 @@
           </button>
           <button
             v-if="model.status === 'downloading'"
-            class="ghost"
+            class="ghost sm"
             :disabled="busy"
             @click="cancelOne(model.key)"
           >
@@ -114,7 +146,7 @@
           </button>
           <button
             v-if="model.status === 'ready' || model.status === 'partial'"
-            class="ghost danger"
+            class="ghost sm danger"
             :disabled="busy"
             @click="removeOne(model.key)"
           >
@@ -123,19 +155,15 @@
           </button>
           <a
             v-if="model.homepage"
-            class="muted small"
+            class="intel-homepage-link muted small"
             :href="model.homepage"
             target="_blank"
             rel="noopener"
           >
-            {{ $t("settings.intelligence.homepage") }}
+            <Icon name="external-link" :size="12" />
+            <span>{{ $t("settings.intelligence.homepage") }}</span>
           </a>
         </div>
-
-        <details v-if="model.extra_requirements?.length" class="intel-extras">
-          <summary>{{ $t("settings.intelligence.extraRequirements") }}</summary>
-          <pre class="mono small">pip install {{ model.extra_requirements.join(" ") }}</pre>
-        </details>
       </li>
     </ul>
 
@@ -253,7 +281,10 @@ async function onCapabilityToggle(capability: "clip" | "face", value: boolean) {
 }
 
 async function onFeatureToggle() {
-  await patch({ feature_enabled: featureToggle.value });
+  if (busy.value) return;
+  const next = !featureToggle.value;
+  featureToggle.value = next;
+  await patch({ feature_enabled: next });
 }
 
 async function patch(payload: Record<string, unknown>) {
@@ -376,9 +407,23 @@ function formatBytes(bytes: number) {
 </script>
 
 <style scoped>
+.intel-master-toggle {
+  margin: 4px 0 12px;
+  grid-template-columns: 1fr;
+}
+
+.intel-master-toggle .settings-toggle-title {
+  font-size: 14px;
+}
+
+.intel-master-toggle .settings-toggle-desc {
+  white-space: normal;
+  line-height: 1.45;
+}
+
 .intel-models {
   list-style: none;
-  margin: 12px 0 0;
+  margin: 4px 0 0;
   padding: 0;
   display: grid;
   gap: 12px;
@@ -387,8 +432,10 @@ function formatBytes(bytes: number) {
 .intel-model {
   border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--surface, rgba(255, 255, 255, 0.4));
+  display: grid;
+  gap: 10px;
 }
 
 .intel-model-head {
@@ -402,6 +449,13 @@ function formatBytes(bytes: number) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.intel-model-title strong {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .intel-model-tag {
@@ -414,6 +468,7 @@ function formatBytes(bytes: number) {
   text-transform: uppercase;
   background: rgba(99, 102, 241, 0.12);
   color: #4f46e5;
+  flex-shrink: 0;
 }
 
 .intel-model-tag.face {
@@ -426,6 +481,7 @@ function formatBytes(bytes: number) {
   padding: 2px 8px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.18);
+  flex-shrink: 0;
 }
 
 .intel-status-pill.ready {
@@ -445,24 +501,62 @@ function formatBytes(bytes: number) {
 }
 
 .intel-model-desc {
-  margin: 6px 0 8px;
+  margin: 0;
 }
 
-.intel-model-row {
+.intel-toggle-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
-  margin-bottom: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2, rgba(15, 23, 42, 0.04));
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.06));
+  cursor: pointer;
+  transition: background var(--transition-fast, 0.15s ease),
+    border-color var(--transition-fast, 0.15s ease);
+}
+
+.intel-toggle-row:hover:not(.disabled) {
+  background: var(--surface-strong, rgba(15, 23, 42, 0.06));
+}
+
+.intel-toggle-row[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.intel-toggle-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.intel-toggle-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text, inherit);
+}
+
+.intel-toggle-desc {
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .intel-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.08);
   color: #b91c1c;
   font-size: 12px;
 }
 
 .intel-progress {
-  margin: 6px 0 8px;
   display: grid;
   gap: 4px;
 }
@@ -485,18 +579,18 @@ function formatBytes(bytes: number) {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  margin-top: 4px;
 }
 
-.intel-extras {
-  margin-top: 8px;
+.intel-homepage-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  text-decoration: none;
 }
 
-.intel-extras pre {
-  background: rgba(0, 0, 0, 0.05);
-  padding: 6px 8px;
-  border-radius: 6px;
-  overflow-x: auto;
+.intel-homepage-link:hover {
+  color: var(--primary, #6366f1);
 }
 
 .intel-clip-panel {

@@ -45,7 +45,7 @@
   "nav": {
     "media": "媒体库",
     "data": "Data 浏览",
-    "face": "人脸"
+    "face": "面孔"
   },
   "sidebar": {
     "allMedia": "全部媒体",
@@ -53,7 +53,7 @@
     "categoryTotal": "分类 · {count}",
     "dataTitle": "AstrBot Data",
     "dataDesc": "只读浏览 /astrbot/data 目录下的文件。",
-    "faceTitle": "人脸",
+    "faceTitle": "面孔",
     "faceDesc": "查看自动识别到的角色，支持合并、拆分、重命名。",
     "ctxNoModify": "无法修改",
     "ctxRename": "改名",
@@ -65,6 +65,17 @@
     "searchPlaceholder": "搜索文件名 / 描述 / 标签",
     "clearSearch": "清除搜索",
     "searchBtn": "搜索",
+    "searchModeLabel": "搜索方式",
+    "searchModeText": "关键词",
+    "searchModeTextHint": "按文件名 / 描述 / 标签搜索",
+    "searchModeClip": "语义",
+    "searchModeClipHint": "用自然语言描述要找的图（CLIP 语义搜索）",
+    "searchModeClipUnavailable": "需要在「设置 → 本地模型」开启并加载 CLIP",
+    "clipSearchPlaceholder": "用自然语言描述要找的图，例如：海边的日落",
+    "clipSearchBtn": "语义搜索",
+    "clipBanner": "语义搜索：在全部图片库中按语义匹配，已忽略分类和分页",
+    "clipResultCount": "返回 {count} 条最相似结果",
+    "clipSearchUnavailable": "CLIP 模型尚未就绪，请先到「本地模型」中下载并启用",
     "uploadBtn": "上传",
     "uploadTitle": "上传文件 / URL 保存",
     "allCategories": "全部",
@@ -107,6 +118,7 @@
   "card": {
     "copyLink": "复制链接",
     "detail": "详情",
+    "scoreTooltip": "CLIP 语义相似度",
     "preview": "预览"
   },
   "drawer": {
@@ -427,22 +439,22 @@
       "recoveryDone": "恢复代码已重新生成"
     },
     "intelligence": {
-      "title": "智能能力 · 本地模型管理",
-      "featureLabel": "启用智能能力",
-      "featureHint": "总开关：启用后可下载和管理 CLIP / 人脸等本地推理模型。",
-      "featureToggle": "启用",
-      "featureBannerOff": "智能能力总开关未启用，请先勾选上方“启用”后再下载或使用模型。",
+      "title": "本地模型管理",
+      "featureLabel": "启用本地模型",
+      "featureHint": "总开关：开启后可下载并管理 CLIP / 人脸等本地推理模型。",
+      "featureToggle": "已启用",
+      "featureBannerOff": "本地模型总开关未启用，请先开启上方开关再下载或使用模型。",
       "mirrorLabel": "HuggingFace 镜像 (可选)",
       "mirrorHint": "如直连不稳定，可填 https://hf-mirror.com 等镜像；留空表示使用官方源。",
       "tagClip": "CLIP",
       "tagFace": "FACE",
       "enableCapability": "启用此能力",
+      "enableCapabilityHint": "开启后该模型可在搜索 / 人脸聚类等流程中被调用。",
       "download": "下载模型",
       "cancel": "取消下载",
       "remove": "删除文件",
       "removeConfirm": "确认删除已下载的模型文件？该模型将无法继续使用，直至重新下载。",
       "homepage": "查看模型主页",
-      "extraRequirements": "需要额外 pip 依赖",
       "saved": "设置已保存",
       "downloadStarted": "已开始下载，可在此查看进度",
       "downloadCancelled": "已取消下载",
@@ -511,7 +523,7 @@
     "initError": "初始化失败: {message}"
   },
   "face": {
-    "title": "人脸",
+    "title": "面孔",
     "subtitle": "查看自动识别到的角色，支持合并、拆分、重命名。",
     "scan": "扫描人脸",
     "scanRunning": "扫描中…",
@@ -528,7 +540,7 @@
     "engineReady": "已就绪",
     "engineNotReady": "未就绪",
     "featureDisabledTitle": "人脸功能未启用",
-    "featureDisabledHint": "请在设置 → 智能能力 中启用人脸识别并下载模型。",
+    "featureDisabledHint": "请在设置 → 本地模型 中启用人脸识别并下载模型。",
     "emptyTitle": "暂无角色",
     "emptyHint": "运行一次扫描后会在这里显示自动聚类的人脸角色。",
     "unnamedPerson": "角色 #{id}",
@@ -547,6 +559,18 @@
     "deletePersonConfirm": "确认删除该角色？已分配的人脸将变为未归属（可在下次重聚类时重新归位）。",
     "deletePersonBtn": "删除",
     "deletePersonDone": "已删除角色",
+    "cleanupOrphans": "清理无效面孔",
+    "cleanupHint": "删除媒体库已不存在文件对应的人脸记录。",
+    "cleanupTitle": "清理无效面孔",
+    "cleanupConfirm": "将删除媒体库中已不存在文件对应的人脸记录及其角色统计。该操作不可撤销，是否继续？",
+    "cleanupBtn": "立即清理",
+    "cleanupDone": "已清理 {count} 条无效人脸记录",
+    "rebuildThumbs": "重建缩略图",
+    "rebuildThumbsHint": "按已存储的人脸框重新裁剪并保存所有面孔缩略图（修复变形问题）。",
+    "rebuildThumbsTitle": "重建面孔缩略图",
+    "rebuildThumbsConfirm": "将依据每张面孔已存储的检测框，重新生成正方形缩略图。耗时取决于人脸数量，是否继续？",
+    "rebuildThumbsBtn": "开始重建",
+    "rebuildThumbsDone": "缩略图重建完成（成功 {processed} / 失败 {failed}）",
     "ctxOpen": "查看",
     "ctxSelect": "加入选择",
     "ctxRename": "重命名",
@@ -563,7 +587,11 @@
       "selectedFaces": "已选 {count}",
       "clearSelection": "取消选择",
       "splitToNew": "拆分到新角色",
-      "unknownFile": "未知文件"
+      "unknownFile": "未知文件",
+      "previewHint": "点击查看原图",
+      "selectFace": "加入批量选择",
+      "previewUnavailable": "原图不存在或已被移除",
+      "linkCopied": "链接已复制"
     }
   }
 }

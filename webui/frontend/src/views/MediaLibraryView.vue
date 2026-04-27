@@ -13,8 +13,12 @@
     :active-category="media.filters.category"
     :categories="category.items"
     :stat-visibility="ui.statVisibility"
+    :search-mode="media.filters.searchMode"
+    :can-use-clip-search="clipSearchAvailable"
+    :clip-ready="clipSearchAvailable"
     @search="onSearch"
     @change-kind="onKindChange"
+    @change-search-mode="onChangeSearchMode"
     @select-category="onSelectCategory"
     @toggle-select="media.toggleSelect"
     @preview="layout.previewItem"
@@ -30,7 +34,7 @@
 </template>
 
 <script setup lang="ts">
-import { inject } from "vue";
+import { computed, inject } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import MediaGrid from "@/components/media/MediaGrid.vue";
@@ -40,6 +44,7 @@ import { useMediaStore } from "@/stores/media";
 import { useUiStore } from "@/stores/ui";
 import { useToastStore } from "@/stores/toast";
 import { useConfirmStore } from "@/stores/confirm";
+import { useConfigStore } from "@/stores/config";
 
 interface LayoutActions {
   openDetail: (item: any) => void;
@@ -60,6 +65,13 @@ const media = useMediaStore();
 const ui = useUiStore();
 const toast = useToastStore();
 const confirm = useConfirmStore();
+const config = useConfigStore();
+
+const clipSearchAvailable = computed(() => {
+  const intel = config.config.intelligence;
+  if (!intel) return false;
+  return !!(intel.feature_enabled && intel.clip_enabled && intel.clip_ready);
+});
 
 function onSearch(query: string) {
   media.setSearch(query);
@@ -71,6 +83,14 @@ function onKindChange(kind: string) {
 }
 function onPageChange(page: number) {
   media.setPage(page);
+  media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
+}
+function onChangeSearchMode(mode: "text" | "clip") {
+  if (mode === "clip" && !clipSearchAvailable.value) {
+    toast.push(t("media.clipSearchUnavailable"), "warning");
+    return;
+  }
+  media.setSearchMode(mode);
   media.fetchList().catch((error) => toast.push((error as Error).message, "error"));
 }
 async function onSelectCategory(cat: string) {

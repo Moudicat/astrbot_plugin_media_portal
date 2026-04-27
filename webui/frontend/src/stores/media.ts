@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { mediaApi } from "@/api/media";
+import { intelligenceApi } from "@/api/intelligence";
 import type { MediaItem, MediaStats } from "@/api/types";
 import { safeGet } from "@/utils/storage";
 
@@ -9,12 +10,17 @@ function initialPageSize(): number {
   return allowed.includes(raw) ? raw : 40;
 }
 
+export type SearchMode = "text" | "clip";
+
+const CLIP_DEFAULT_TOP_K = 60;
+
 export interface MediaFilters {
   category: string;
   query: string;
   kind: string;
   page: number;
   page_size: number;
+  searchMode: SearchMode;
 }
 
 export const useMediaStore = defineStore("media", {
@@ -29,6 +35,7 @@ export const useMediaStore = defineStore("media", {
       kind: "",
       page: 1,
       page_size: initialPageSize(),
+      searchMode: "text" as SearchMode,
     } as MediaFilters,
     pagination: {
       total: 0,
@@ -42,6 +49,35 @@ export const useMediaStore = defineStore("media", {
     async fetchList() {
       this.loading = true;
       try {
+        if (this.filters.searchMode === "clip") {
+          const text = (this.filters.query || "").trim();
+          if (!text) {
+            this.items = [];
+            this.pagination.total = 0;
+            this.pagination.totalPages = 0;
+            return;
+          }
+          const data = await intelligenceApi.clipSearch(text, CLIP_DEFAULT_TOP_K);
+          const results = (data.results || []).map((r) => ({
+            id: r.id,
+            filename: r.filename,
+            category: r.category,
+            kind: (r.kind || "image") as MediaItem["kind"],
+            size: r.size,
+            size_human: r.size_human,
+            description: r.description,
+            tags: r.tags,
+            score: r.score,
+          })) as MediaItem[];
+          this.items = results;
+          this.pagination.total = results.length;
+          this.pagination.totalPages = results.length ? 1 : 0;
+          this.filters.page = 1;
+          const idSet = new Set(results.map((item) => item.id));
+          this.selectedIds = this.selectedIds.filter((id) => idSet.has(id));
+          return;
+        }
+
         const data = await mediaApi.list({
           category: this.filters.category,
           kind: this.filters.kind,
@@ -72,6 +108,13 @@ export const useMediaStore = defineStore("media", {
     setSearch(query: string) {
       this.filters.query = query || "";
       this.filters.page = 1;
+    },
+    setSearchMode(mode: SearchMode) {
+      const next: SearchMode = mode === "clip" ? "clip" : "text";
+      if (this.filters.searchMode === next) return;
+      this.filters.searchMode = next;
+      this.filters.page = 1;
+      this.selectedIds = [];
     },
     setKind(kind: string) {
       this.filters.kind = kind || "";

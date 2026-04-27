@@ -41,6 +41,14 @@
           <Icon name="clock" :size="11" />
           {{ durationLabel }}
         </span>
+        <span
+          v-if="scoreLabel"
+          class="preview-score"
+          :title="$t('card.scoreTooltip')"
+        >
+          <Icon name="cpu" :size="11" />
+          {{ scoreLabel }}
+        </span>
         <div class="preview-actions" @click.stop>
           <button class="icon sm" :title="$t('card.copyLink')" @click="$emit('copy-link', item.id)">
             <Icon name="link-2" :size="14" />
@@ -172,6 +180,12 @@ const durationLabel = computed(() => {
   if (props.item.kind !== "audio" && props.item.kind !== "video") return "";
   return formatDuration(props.item.duration);
 });
+const scoreLabel = computed(() => {
+  const raw = props.item.score;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return "";
+  const pct = Math.round(Math.max(0, Math.min(1, raw)) * 100);
+  return `${pct}%`;
+});
 
 function handleImgError() {
   if (!imageError.value) imageError.value = true;
@@ -193,5 +207,22 @@ function onNameClick() {
 }
 .meta-name-clickable:hover {
   color: var(--primary);
+}
+.preview-score {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+}
+.preview-score :deep(svg) {
+  flex: none;
 }
 </style>

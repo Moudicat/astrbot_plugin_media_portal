@@ -196,7 +196,54 @@ class FaceIndexWorker:
         removed = 0
         for media_id in existing - valid:
             removed += await self._store.delete_faces_for_media(media_id)
+        await self._store.recount_persons()
         return removed
+
+    async def regenerate_thumbs(
+        self,
+        media_resolver: Callable[[int], Awaitable[str | None]],
+        *,
+        force: bool = True,
+    ) -> tuple[int, int]:
+        """重新生成所有面孔缩略图。
+
+        :param media_resolver: ``async (media_id) -> abs_path | None``。
+        :param force: ``True`` 时无论旧缩略图是否存在都重新生成。
+        :return: ``(processed, failed)``。
+        """
+        targets = await self._store.list_face_thumb_targets()
+        processed = 0
+        failed = 0
+        for face_id, media_id, bbox in targets:
+            if self._stop_event.is_set():
+                break
+            try:
+                abs_path = await media_resolver(int(media_id))
+            except Exception:
+                abs_path = None
+            if not abs_path:
+                failed += 1
+                continue
+            thumb_path = self._thumb_dir / f"{face_id}.jpg"
+            if not force and thumb_path.is_file():
+                processed += 1
+                continue
+            try:
+                await asyncio.to_thread(
+                    _crop_and_save_thumb, Path(abs_path), bbox, thumb_path
+                )
+                if thumb_path.is_file():
+                    await self._store.set_face_thumb(face_id, str(thumb_path))
+                    processed += 1
+                else:
+                    failed += 1
+            except Exception as exc:  # pragma: no cover - best effort
+                logger.warning(
+                    "重建人脸缩略图失败 face_id=%s err=%s", face_id, exc
+                )
+                failed += 1
+            await asyncio.sleep(0)
+        return processed, failed
 
 
 def _crop_and_save_thumb(
@@ -204,7 +251,8 @@ def _crop_and_save_thumb(
     bbox: tuple[float, float, float, float],
     target_path: Path,
     *,
-    size: tuple[int, int] = (112, 112),
+    size: tuple[int, int] = (256, 256),
+    margin: float = 0.6,
 ) -> None:
     try:
         from PIL import Image, ImageOps
@@ -215,14 +263,33 @@ def _crop_and_save_thumb(
         return
     img = Image.open(src_path)
     img = ImageOps.exif_transpose(img).convert("RGB")
-    x1, y1, x2, y2 = bbox
     width, height = img.size
-    x1 = max(0, int(x1))
-    y1 = max(0, int(y1))
-    x2 = min(width, int(x2))
-    y2 = min(height, int(y2))
-    if x2 - x1 < 4 or y2 - y1 < 4:
+    x1, y1, x2, y2 = bbox
+    bw = max(0.0, x2 - x1)
+    bh = max(0.0, y2 - y1)
+    if bw < 4 or bh < 4 or width < 4 or height < 4:
         return
-    cropped = img.crop((x1, y1, x2, y2)).resize(size, Image.BICUBIC)
+    cx = (x1 + x2) * 0.5
+    cy = (y1 + y2) * 0.5
+    base = max(bw, bh)
+    side = base * (1.0 + max(0.0, margin))
+    side = min(side, float(min(width, height)))
+    half = side * 0.5
+    if cx - half < 0:
+        cx = half
+    elif cx + half > width:
+        cx = width - half
+    if cy - half < 0:
+        cy = half
+    elif cy + half > height:
+        cy = height - half
+    sx1 = max(0, int(round(cx - half)))
+    sy1 = max(0, int(round(cy - half)))
+    sx2 = min(width, int(round(cx + half)))
+    sy2 = min(height, int(round(cy + half)))
+    if sx2 - sx1 < 2 or sy2 - sy1 < 2:
+        return
+    cropped = img.crop((sx1, sy1, sx2, sy2))
+    cropped = cropped.resize(size, Image.BICUBIC)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    cropped.save(target_path, format="JPEG", quality=85)
+    cropped.save(target_path, format="JPEG", quality=88)

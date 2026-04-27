@@ -1237,6 +1237,84 @@ button.block {
   justify-content: center;
 }
 
+.toolbar-search.is-clip .input-wrap .icon-slot,
+.toolbar-search.is-clip .search-submit {
+  color: #fff;
+}
+.toolbar-search.is-clip .search-submit {
+  background: var(--primary-gradient, linear-gradient(135deg, #6366f1, #8b5cf6));
+}
+.toolbar-search.is-clip .input-wrap input[type="search"] {
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+
+.search-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 0;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1, var(--surface));
+}
+.search-mode-toggle .mode-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  min-height: 28px;
+  border-radius: calc(var(--radius-sm) - 2px);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.search-mode-toggle .mode-pill:hover:not(:disabled):not(.active) {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.search-mode-toggle .mode-pill.active {
+  color: #fff;
+  background: var(--primary-gradient, linear-gradient(135deg, #6366f1, #8b5cf6));
+  box-shadow: var(--shadow-sm);
+}
+.search-mode-toggle .mode-pill:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.search-mode-toggle .mode-pill .icon {
+  flex: none;
+}
+
+.clip-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
+  color: var(--text);
+  font-size: 12.5px;
+  flex-wrap: wrap;
+}
+.clip-banner :deep(svg),
+.clip-banner > svg {
+  color: var(--primary);
+  flex: none;
+}
+.clip-banner .clip-banner-count {
+  font-size: 12px;
+}
+.clip-banner .clip-banner-mode {
+  margin-left: auto;
+}
+
 .toolbar-actions {
   display: flex;
   gap: 8px;

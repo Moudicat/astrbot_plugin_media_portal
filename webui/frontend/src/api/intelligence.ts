@@ -221,4 +221,13 @@ export const intelligenceApi = {
     const base = `/api/intelligence/face/${faceId}/thumb`;
     return token ? `${base}?token=${encodeURIComponent(token)}` : base;
   },
+  faceCleanupOrphans: () =>
+    request<{ removed: number }>("/api/intelligence/face/cleanup", {
+      method: "POST",
+    }),
+  faceRebuildThumbs: () =>
+    request<{ processed: number; failed: number }>(
+      "/api/intelligence/face/thumbs/rebuild",
+      { method: "POST" },
+    ),
 };

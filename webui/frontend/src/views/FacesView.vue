@@ -2,25 +2,48 @@
   <div class="faces-view">
     <div class="faces-toolbar">
       <div class="faces-toolbar-info">
-        <h2>{{ $t("face.title") }}</h2>
+        <h2>
+          <Icon name="user" :size="20" />
+          <span>{{ $t("face.title") }}</span>
+        </h2>
         <p class="muted">{{ $t("face.subtitle") }}</p>
       </div>
       <div class="faces-toolbar-actions">
         <button
-          class="ghost"
+          class="ghost sm"
+          :disabled="cleanupPending || !faceFeatureEnabled"
+          :title="$t('face.cleanupHint')"
+          @click="onCleanupOrphans"
+        >
+          <Icon name="trash" :size="14" />
+          <span>{{ $t("face.cleanupOrphans") }}</span>
+        </button>
+        <button
+          class="ghost sm"
+          :disabled="rebuildPending || !faceFeatureEnabled"
+          :title="$t('face.rebuildThumbsHint')"
+          @click="onRebuildThumbs"
+        >
+          <Icon name="image" :size="14" />
+          <span>{{ $t("face.rebuildThumbs") }}</span>
+        </button>
+        <button
+          class="ghost sm"
           :disabled="!canRecluster || reclusterPending"
           @click="onRecluster"
         >
           <Icon name="rotate-ccw" :size="14" />
-          {{ $t("face.recluster") }}
+          <span>{{ $t("face.recluster") }}</span>
         </button>
         <button
-          class="primary"
+          class="primary sm"
           :disabled="!canScan || scanPending || statusInfo.scanning"
           @click="onScan"
         >
           <Icon name="scan-line" :size="14" />
-          {{ statusInfo.scanning ? $t("face.scanRunning") : $t("face.scan") }}
+          <span>{{
+            statusInfo.scanning ? $t("face.scanRunning") : $t("face.scan")
+          }}</span>
         </button>
       </div>
     </div>
@@ -71,7 +94,11 @@
           v-for="person in persons"
           :key="person.id"
           class="face-card"
-          :class="{ active: selectedId === person.id, batch: selectedIds.has(person.id) }"
+          :class="{
+            active: selectedId === person.id,
+            batch: selectedIds.has(person.id),
+            named: !!person.name,
+          }"
           @click="onSelectPerson(person, $event)"
           @contextmenu.prevent="onPersonContext($event, person)"
         >
@@ -84,24 +111,28 @@
               @error="onThumbError($event)"
             />
             <div v-else class="face-thumb-placeholder">
-              <Icon name="image" :size="24" />
+              <Icon name="user" :size="40" />
             </div>
+            <button
+              class="plain face-card-check"
+              type="button"
+              :class="{ on: selectedIds.has(person.id) }"
+              :title="$t('face.ctxSelect')"
+              :aria-pressed="selectedIds.has(person.id) ? 'true' : 'false'"
+              @click.stop="toggleSelect(person.id)"
+            >
+              <Icon name="check" :size="14" />
+            </button>
+            <span class="face-card-badge">
+              {{ $t("face.faceCount", { count: person.face_count }) }}
+            </span>
           </div>
           <div class="face-card-meta">
-            <div class="face-card-name">
+            <div class="face-card-name" :title="person.name || ''">
               {{ person.name || $t("face.unnamedPerson", { id: person.id }) }}
             </div>
-            <div class="face-card-count">
-              {{ $t("face.faceCount", { count: person.face_count }) }}
-            </div>
+            <div class="face-card-id muted">#{{ person.id }}</div>
           </div>
-          <input
-            class="face-card-check"
-            type="checkbox"
-            :checked="selectedIds.has(person.id)"
-            @click.stop="toggleSelect(person.id)"
-            @change.stop
-          />
         </div>
         <div v-if="!persons.length && !loading" class="faces-empty">
           <Icon name="info" :size="20" />
@@ -110,18 +141,30 @@
         </div>
       </section>
 
-      <div v-if="selectedIds.size > 1" class="faces-batchbar">
-        <span>
-          {{ $t("face.batchSelected", { count: selectedIds.size }) }}
-        </span>
-        <button class="ghost" @click="onMergeBatch">
-          <Icon name="layers" :size="14" />
-          {{ $t("face.merge") }}
-        </button>
-        <button class="ghost" @click="clearBatch">
-          {{ $t("face.clearSelection") }}
-        </button>
-      </div>
+      <transition name="batchbar">
+        <div v-if="selectedIds.size > 0" class="faces-batchbar">
+          <div class="faces-batchbar-info">
+            <Icon name="layers" :size="14" />
+            <span>
+              {{ $t("face.batchSelected", { count: selectedIds.size }) }}
+            </span>
+          </div>
+          <div class="faces-batchbar-actions">
+            <button
+              class="primary sm"
+              :disabled="selectedIds.size < 2"
+              @click="onMergeBatch"
+            >
+              <Icon name="layers" :size="14" />
+              <span>{{ $t("face.merge") }}</span>
+            </button>
+            <button class="ghost sm" @click="clearBatch">
+              <Icon name="x" :size="14" />
+              <span>{{ $t("face.clearSelection") }}</span>
+            </button>
+          </div>
+        </div>
+      </transition>
     </template>
 
     <FacePersonDrawer
@@ -135,6 +178,18 @@
       @split="onSplit"
       @merge-into="onMergeInto"
       @refresh="reloadAfterChange"
+      @preview-media="onPreviewFromFace"
+    />
+
+    <PlayerModal
+      :visible="previewVisible"
+      :item="previewItem"
+      :readonly-token="auth.readonlyToken"
+      :can-navigate="previewList.length > 1"
+      @close="closePreview"
+      @next="shiftPreview(1)"
+      @prev="shiftPreview(-1)"
+      @copy-link="onCopyPreviewLink"
     />
   </div>
 </template>
@@ -144,6 +199,7 @@ import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import FacePersonDrawer from "@/components/face/FacePersonDrawer.vue";
+import PlayerModal from "@/components/media/PlayerModal.vue";
 import { intelligenceApi } from "@/api/intelligence";
 import type {
   FacePerson,
@@ -178,6 +234,8 @@ const statusInfo = ref<FaceStatusResp>({
 });
 const scanPending = ref(false);
 const reclusterPending = ref(false);
+const cleanupPending = ref(false);
+const rebuildPending = ref(false);
 const loading = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -264,6 +322,59 @@ async function onScan() {
   }
 }
 
+async function onCleanupOrphans() {
+  if (!faceFeatureEnabled.value) return;
+  const ok = await confirm.confirm({
+    title: t("face.cleanupTitle"),
+    message: t("face.cleanupConfirm"),
+    confirmText: t("face.cleanupBtn"),
+    tone: "danger",
+    icon: "trash",
+  });
+  if (!ok) return;
+  cleanupPending.value = true;
+  try {
+    const result = await intelligenceApi.faceCleanupOrphans();
+    toast.push(
+      t("face.cleanupDone", { count: result.removed }),
+      "success",
+    );
+    await reloadAfterChange();
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  } finally {
+    cleanupPending.value = false;
+  }
+}
+
+async function onRebuildThumbs() {
+  if (!faceFeatureEnabled.value) return;
+  const ok = await confirm.confirm({
+    title: t("face.rebuildThumbsTitle"),
+    message: t("face.rebuildThumbsConfirm"),
+    confirmText: t("face.rebuildThumbsBtn"),
+    tone: "warning",
+    icon: "image",
+  });
+  if (!ok) return;
+  rebuildPending.value = true;
+  try {
+    const result = await intelligenceApi.faceRebuildThumbs();
+    toast.push(
+      t("face.rebuildThumbsDone", {
+        processed: result.processed,
+        failed: result.failed,
+      }),
+      "success",
+    );
+    await reloadAfterChange();
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  } finally {
+    rebuildPending.value = false;
+  }
+}
+
 async function onRecluster() {
   if (!canRecluster.value) return;
   const ok = await confirm.confirm({
@@ -296,6 +407,97 @@ async function reloadAfterChange() {
   await Promise.all([refreshPersons(), refreshStatus()]);
   if (selectedId.value) {
     await openPersonDetail(selectedId.value);
+  }
+}
+
+interface PreviewMediaItem {
+  id?: number;
+  filename?: string;
+  category?: string;
+  kind?: string;
+  size?: number;
+  size_human?: string;
+  rel_path?: string;
+}
+
+const previewVisible = ref(false);
+const previewItem = ref<PreviewMediaItem | null>(null);
+const previewList = ref<PreviewMediaItem[]>([]);
+
+function faceToPreviewItem(face: FaceItem): PreviewMediaItem | null {
+  const meta = face.media;
+  if (!meta || !meta.filename || !meta.category) return null;
+  return {
+    id: meta.id,
+    filename: meta.filename,
+    category: meta.category,
+    kind: meta.kind || "image",
+    size: meta.size,
+    size_human: meta.size_human,
+    rel_path: meta.rel_path,
+  };
+}
+
+function onPreviewFromFace(face: FaceItem) {
+  const item = faceToPreviewItem(face);
+  if (!item) {
+    toast.push(t("face.drawer.previewUnavailable"), "warning");
+    return;
+  }
+  const list: PreviewMediaItem[] = [];
+  const seen = new Set<string>();
+  for (const f of drawerFaces.value || []) {
+    const candidate = faceToPreviewItem(f);
+    if (!candidate) continue;
+    const key = candidate.id != null ? `id:${candidate.id}` : `f:${candidate.category}|${candidate.filename}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(candidate);
+  }
+  previewList.value = list.length ? list : [item];
+  previewItem.value = item;
+  previewVisible.value = true;
+}
+
+function previewKey(item: PreviewMediaItem | null): string {
+  if (!item) return "";
+  if (item.id != null) return `id:${item.id}`;
+  if (item.filename && item.category) return `f:${item.category}|${item.filename}`;
+  return "";
+}
+
+function shiftPreview(delta: number) {
+  if (!previewItem.value) return;
+  const list = previewList.value || [];
+  if (list.length < 2) return;
+  const key = previewKey(previewItem.value);
+  let idx = list.findIndex((entry) => previewKey(entry) === key);
+  if (idx < 0) idx = 0;
+  const next = list[(idx + delta + list.length) % list.length];
+  if (next) previewItem.value = next;
+}
+
+function closePreview() {
+  previewVisible.value = false;
+}
+
+async function onCopyPreviewLink(payload: { id?: string | number; url?: string }) {
+  try {
+    let link = "";
+    if (payload && payload.url) {
+      link = payload.url;
+    } else if (previewItem.value && previewItem.value.category && previewItem.value.filename) {
+      const token = auth.readonlyToken
+        ? `?token=${encodeURIComponent(auth.readonlyToken)}`
+        : "";
+      link = `/files/${encodeURIComponent(previewItem.value.category)}/${encodeURIComponent(previewItem.value.filename)}${token}`;
+    }
+    if (!link) return;
+    const absolute = new URL(link, window.location.origin).toString();
+    await navigator.clipboard.writeText(absolute);
+    toast.push(t("face.drawer.linkCopied"), "success");
+  } catch (error) {
+    toast.push((error as Error).message, "error");
   }
 }
 
@@ -454,56 +656,86 @@ onBeforeUnmount(() => {
 .faces-view {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 18px 30px;
+  gap: 18px;
+  padding: 18px 20px 80px;
 }
 
 .faces-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
   align-items: flex-end;
   justify-content: space-between;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--primary) 8%, var(--surface)) 0%,
+    var(--surface) 60%
+  );
+  border: 1px solid var(--line);
 }
-.faces-toolbar h2 {
-  margin: 0 0 4px;
-  font-size: 18px;
+.faces-toolbar-info h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+}
+.faces-toolbar-info h2 :deep(svg) {
+  color: var(--primary);
+}
+.faces-toolbar-info p {
+  margin: 0;
+  font-size: 13px;
 }
 .faces-toolbar-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .faces-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
 }
 .stat {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.15s ease;
+}
+.stat:hover {
+  border-color: color-mix(in srgb, var(--primary) 25%, var(--line));
 }
 .stat-label {
   font-size: 12px;
   color: var(--muted);
-  margin-bottom: 4px;
+  letter-spacing: 0.02em;
 }
 .stat-value {
-  font-size: 16px;
-  font-weight: 500;
+  font-size: 20px;
+  font-weight: 600;
   word-break: break-all;
 }
 .pill {
-  display: inline-block;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
   border-radius: 999px;
   font-size: 12px;
+  font-weight: 500;
 }
 .pill.on {
-  background: color-mix(in srgb, var(--success, #4ade80) 16%, transparent);
+  background: color-mix(in srgb, var(--success, #4ade80) 18%, transparent);
   color: color-mix(in srgb, var(--success, #4ade80) 90%, var(--text));
 }
 .pill.off {
@@ -514,110 +746,222 @@ onBeforeUnmount(() => {
 .faces-warning {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: 8px;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
   background: color-mix(in srgb, var(--warning, #facc15) 14%, transparent);
   color: color-mix(in srgb, var(--warning, #facc15) 80%, var(--text));
   font-size: 13px;
+  border: 1px solid color-mix(in srgb, var(--warning, #facc15) 30%, transparent);
 }
 
 .faces-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 14px;
 }
 
 .face-card {
   position: relative;
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--line);
-  transition: transform 0.12s ease, border-color 0.12s ease;
+  transition: transform 0.15s ease, border-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 .face-card:hover {
-  border-color: color-mix(in srgb, var(--primary) 35%, var(--line));
-  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--line));
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
 }
 .face-card.active {
   border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .face-card.batch {
-  border-color: color-mix(in srgb, var(--primary) 60%, var(--line));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 25%, transparent);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 30%, transparent);
+}
+.face-card.named .face-card-name {
+  color: var(--text);
 }
 
 .face-thumb {
+  position: relative;
   aspect-ratio: 1;
   width: 100%;
-  background: color-mix(in srgb, var(--muted) 8%, transparent);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background:
+    radial-gradient(
+      circle at 50% 35%,
+      color-mix(in srgb, var(--primary) 18%, transparent),
+      color-mix(in srgb, var(--muted) 10%, transparent) 70%
+    );
+  overflow: hidden;
 }
 .face-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
+  transition: transform 0.4s ease;
+}
+.face-card:hover .face-thumb img {
+  transform: scale(1.04);
 }
 .face-thumb-placeholder {
-  color: var(--muted);
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--text) 35%, transparent);
 }
 
-.face-card-meta {
-  padding: 8px 10px;
-}
-.face-card-name {
-  font-weight: 500;
-  font-size: 13px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.face-card-count {
-  font-size: 12px;
-  color: var(--muted);
-}
 .face-card-check {
   position: absolute;
   top: 8px;
   right: 8px;
-  margin: 0;
-  width: 16px;
-  height: 16px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  min-width: 28px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(15, 23, 42, 0.45);
+  color: rgba(255, 255, 255, 0.95);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
+  padding: 0;
+  margin: 0;
+  line-height: 1;
+  box-sizing: border-box;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  transition: background 0.15s ease, transform 0.15s ease,
+    border-color 0.15s ease;
   z-index: 2;
+  opacity: 0;
+}
+.face-card:hover .face-card-check,
+.face-card.batch .face-card-check,
+.face-card-check.on {
+  opacity: 1;
+}
+.face-card-check.on {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.face-card-check:hover {
+  transform: scale(1.08);
+  border-color: #fff;
+}
+.face-card-check :deep(svg) {
+  flex: none;
+  display: block;
+}
+
+.face-card-badge {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(15, 23, 42, 0.6);
+  color: #fff;
+  backdrop-filter: blur(6px);
+}
+
+.face-card-meta {
+  padding: 10px 12px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.face-card-name {
+  font-weight: 500;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+.face-card.named .face-card-name {
+  color: var(--text);
+}
+.face-card-id {
+  font-size: 11.5px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .faces-empty {
+  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   align-items: center;
   text-align: center;
-  padding: 30px 12px;
+  padding: 40px 16px;
   border: 1px dashed var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--surface);
+  color: var(--muted);
 }
 .faces-empty h3 {
   margin: 4px 0 0;
+  color: var(--text);
 }
 
 .faces-batchbar {
   position: sticky;
-  bottom: 12px;
-  align-self: center;
-  display: inline-flex;
+  bottom: 18px;
+  margin: 0 auto;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--surface);
+  gap: 14px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
   border: 1px solid var(--line);
   border-radius: 999px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.18),
+    0 2px 8px rgba(0, 0, 0, 0.08);
+  backdrop-filter: blur(12px);
   font-size: 13px;
+  z-index: 5;
+  max-width: 90%;
+}
+.faces-batchbar-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  color: var(--text);
+}
+.faces-batchbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.batchbar-enter-from,
+.batchbar-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.batchbar-enter-active,
+.batchbar-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
 </style>

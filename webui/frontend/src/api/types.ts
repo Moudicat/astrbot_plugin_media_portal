@@ -21,6 +21,8 @@ export interface MediaItem {
   name?: string;
   path?: string;
   is_dir?: boolean;
+  // CLIP 语义搜索结果中的相似度（0~1）
+  score?: number;
 }
 
 export interface MediaListResp {

@@ -2319,6 +2319,59 @@ class WebUIServer:
             await store.delete_person(int(person_id))
             return {"deleted": True}
 
+        async def _list_valid_media_ids() -> set[int]:
+            getter = getattr(self.media_manager, "list_image_records_minimal", None)
+            if not callable(getter):
+                return set()
+            try:
+                records = await getter()
+            except Exception:
+                records = []
+            ids: set[int] = set()
+            for rec in records or []:
+                try:
+                    ids.add(int(rec[0]))
+                except Exception:
+                    continue
+            return ids
+
+        async def _resolve_media_path(media_id: int) -> str | None:
+            getter = getattr(self.media_manager, "get_by_id", None)
+            if not callable(getter):
+                return None
+            try:
+                record = await getter(int(media_id))
+            except Exception:
+                return None
+            if record is None:
+                return None
+            payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+            abs_path = payload.get("abs_path") or ""
+            if not abs_path:
+                return None
+            return str(abs_path)
+
+        @self._app.post("/api/intelligence/face/cleanup")
+        async def intel_face_cleanup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            valid = await _list_valid_media_ids()
+            removed = await manager.cleanup_face_orphans(valid)
+            return {"removed": int(removed)}
+
+        @self._app.post("/api/intelligence/face/thumbs/rebuild")
+        async def intel_face_thumbs_rebuild(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            processed, failed = await manager.regenerate_face_thumbs(
+                _resolve_media_path
+            )
+            return {"processed": int(processed), "failed": int(failed)}
+
         @self._app.get("/api/intelligence/face/{face_id}/thumb")
         async def intel_face_thumb(
             face_id: int,
