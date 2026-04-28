@@ -47,6 +47,27 @@ def _as_int(value: Any, default: int, minimum: int | None = None) -> int:
     return parsed
 
 
+def _as_float(
+    value: Any,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """把任意输入解析为浮点数；解析失败时回退默认值。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        if value is not None and str(value).strip() != "":
+            logger.warning("浮点配置值无效: %r，已回退默认值 %s。", value, default)
+        parsed = default
+    if minimum is not None and parsed < minimum:
+        return minimum
+    if maximum is not None and parsed > maximum:
+        return maximum
+    return parsed
+
+
 def _as_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -174,6 +195,14 @@ class IntelligenceSettings:
     clip_enabled: bool = False
     face_enabled: bool = False
     max_concurrent_downloads: int = 1
+    face_min_det_score: float = 0.6
+    """人脸检测置信度下限（SCRFD 0~1）。"""
+
+    face_min_face_size: int = 60
+    """人脸框最短边像素下限，过滤远景小脸。"""
+
+    face_min_blur_var: float = 60.0
+    """112×112 对齐人脸的拉普拉斯方差下限，过滤糊脸。0 表示不过滤。"""
 
 
 @dataclass(slots=True)
@@ -285,6 +314,18 @@ def load_plugin_settings(
         max_concurrent_downloads=max(
             1,
             min(3, _as_int(intelligence_raw.get("max_concurrent_downloads"), 1, minimum=1)),
+        ),
+        face_min_det_score=_as_float(
+            intelligence_raw.get("face_min_det_score"),
+            0.6,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        face_min_face_size=_as_int(
+            intelligence_raw.get("face_min_face_size"), 60, minimum=0
+        ),
+        face_min_blur_var=_as_float(
+            intelligence_raw.get("face_min_blur_var"), 60.0, minimum=0.0
         ),
     )
 

@@ -16,11 +16,47 @@
     </div>
 
     <div class="panel" style="display: flex; flex-direction: column; gap: 10px">
+      <div
+        v-if="canUseClipSearch"
+        class="search-mode-toggle-row"
+        role="tablist"
+        :aria-label="$t('media.searchModeLabel')"
+      >
+        <button
+          type="button"
+          class="plain mode-pill"
+          :class="{ active: searchMode === 'text' }"
+          role="tab"
+          :aria-selected="searchMode === 'text' ? 'true' : 'false'"
+          :title="$t('media.searchModeTextHint')"
+          @click="onChangeSearchMode('text')"
+        >
+          <Icon name="align-left" :size="13" />
+          <span>{{ $t("media.searchModeText") }}</span>
+        </button>
+        <button
+          type="button"
+          class="plain mode-pill"
+          :class="{ active: searchMode === 'clip' }"
+          role="tab"
+          :aria-selected="searchMode === 'clip' ? 'true' : 'false'"
+          :disabled="!clipReady"
+          :title="
+            clipReady
+              ? $t('media.searchModeClipHint')
+              : $t('media.searchModeClipUnavailable')
+          "
+          @click="onChangeSearchMode('clip')"
+        >
+          <Icon name="cpu" :size="13" />
+          <span>{{ $t("media.searchModeClip") }}</span>
+        </button>
+      </div>
       <div class="toolbar">
         <div class="toolbar-search" :class="{ 'is-clip': searchMode === 'clip' }">
           <div
             v-if="canUseClipSearch"
-            class="search-mode-toggle"
+            class="search-mode-toggle hide-on-mobile"
             role="tablist"
             :aria-label="$t('media.searchModeLabel')"
           >
@@ -117,6 +153,7 @@
         <div class="toolbar-actions">
           <button
             class="icon view-mode-btn mobile-inline"
+            :class="{ 'force-show': searchMode === 'clip' }"
             type="button"
             :title="viewModeToggleLabel"
             :aria-label="viewModeToggleLabel"
@@ -146,23 +183,6 @@
           class="chip view-mode-btn pc-only"
           type="button"
           style="margin-left: auto"
-          :title="viewModeToggleLabel"
-          :aria-label="viewModeToggleLabel"
-          @click="ui.toggleGridMode()"
-        >
-          <Icon :name="ui.gridMode === 'card' ? 'list' : 'layout-grid'" :size="14" />
-        </button>
-      </div>
-
-      <div v-else class="clip-banner" role="status">
-        <Icon name="cpu" :size="14" />
-        <span>{{ $t("media.clipBanner") }}</span>
-        <span v-if="totalCount > 0" class="muted clip-banner-count">
-          {{ $t("media.clipResultCount", { count: totalCount }) }}
-        </span>
-        <button
-          class="chip view-mode-btn pc-only clip-banner-mode"
-          type="button"
           :title="viewModeToggleLabel"
           :aria-label="viewModeToggleLabel"
           @click="ui.toggleGridMode()"

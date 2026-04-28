@@ -19,9 +19,11 @@
     <TopBar
       :theme="ui.theme"
       :selected-count="media.selectedIds.length"
-      @toggle-sidebar="ui.setSidebarOpen(!ui.sidebarOpen)"
+      :sidebar-visible="sidebarVisible"
+      @toggle-sidebar="ui.toggleSidebar"
       @toggle-theme="ui.toggleTheme"
       @refresh="refreshAll"
+      @intelligence="intelligenceVisible = true"
       @settings="settingsVisible = true"
       @logout="handleLogout"
     />
@@ -32,7 +34,7 @@
       @click="ui.setSidebarOpen(false)"
     ></div>
 
-    <main class="layout">
+    <main class="layout" :class="{ 'sidebar-collapsed': ui.sidebarCollapsed }">
       <div class="sidebar-wrap" :class="{ open: ui.sidebarOpen }">
         <Sidebar
           :categories="category.items"
@@ -138,6 +140,11 @@
       @purge-trash-expired="purgeExpiredTrash"
     />
 
+    <IntelligenceDialog
+      :visible="intelligenceVisible"
+      @close="intelligenceVisible = false"
+    />
+
     <UploadProgress
       :jobs="upload.jobs"
       :open="upload.panelOpen"
@@ -166,12 +173,14 @@ import CategoryCreateDialog from "@/components/category/CategoryCreateDialog.vue
 import CategoryRenameDialog from "@/components/category/CategoryRenameDialog.vue";
 import BatchCategoryDialog from "@/components/category/BatchCategoryDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
+import IntelligenceDialog from "@/components/settings/IntelligenceDialog.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useConfigStore } from "@/stores/config";
 import { useMediaStore } from "@/stores/media";
 import { useCategoryStore } from "@/stores/category";
 import { useDataBrowserStore } from "@/stores/dataBrowser";
 import { useUploadStore } from "@/stores/upload";
+import { useProgressStore } from "@/stores/progress";
 import { useUiStore } from "@/stores/ui";
 import { useToastStore } from "@/stores/toast";
 import { useConfirmStore } from "@/stores/confirm";
@@ -193,6 +202,7 @@ const media = useMediaStore();
 const category = useCategoryStore();
 const dataBrowser = useDataBrowserStore();
 const upload = useUploadStore();
+const progress = useProgressStore();
 const ui = useUiStore();
 const toast = useToastStore();
 const confirm = useConfirmStore();
@@ -211,12 +221,28 @@ const categoryRenameVisible = ref(false);
 const categoryRenameTarget = ref<CategoryItem | null>(null);
 const batchCategoryVisible = ref(false);
 const settingsVisible = ref(false);
+const intelligenceVisible = ref(false);
 
 const viewMode = computed(() => {
   if (route.name === "data") return "data";
   if (route.name === "faces") return "face";
   return "media";
 });
+
+const PC_HOVER_QUERY = "(hover: hover) and (pointer: fine)";
+const isPcHoverDevice = ref(
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(PC_HOVER_QUERY).matches
+    : true,
+);
+let pcHoverMql: MediaQueryList | null = null;
+const onPcHoverChange = (event: MediaQueryListEvent) => {
+  isPcHoverDevice.value = event.matches;
+};
+
+const sidebarVisible = computed(() =>
+  isPcHoverDevice.value ? !ui.sidebarCollapsed : ui.sidebarOpen,
+);
 
 function routeCategoryValue(raw: unknown): string {
   if (Array.isArray(raw)) return String(raw[0] || "");
@@ -280,6 +306,15 @@ watch(
 onMounted(async () => {
   ui.applyTheme();
   attachGlobalUploadHandlers();
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+    pcHoverMql = window.matchMedia(PC_HOVER_QUERY);
+    isPcHoverDevice.value = pcHoverMql.matches;
+    if (typeof pcHoverMql.addEventListener === "function") {
+      pcHoverMql.addEventListener("change", onPcHoverChange);
+    } else if (typeof (pcHoverMql as any).addListener === "function") {
+      (pcHoverMql as any).addListener(onPcHoverChange);
+    }
+  }
   if (!auth.token) return;
   try {
     await bootstrap();
@@ -289,10 +324,20 @@ onMounted(async () => {
     await auth.logout(false);
     router.replace({ name: "login" });
   }
+  progress.start();
 });
 
 onBeforeUnmount(() => {
   detachGlobalUploadHandlers();
+  progress.stop();
+  if (pcHoverMql) {
+    if (typeof pcHoverMql.removeEventListener === "function") {
+      pcHoverMql.removeEventListener("change", onPcHoverChange);
+    } else if (typeof (pcHoverMql as any).removeListener === "function") {
+      (pcHoverMql as any).removeListener(onPcHoverChange);
+    }
+    pcHoverMql = null;
+  }
 });
 
 async function bootstrap() {

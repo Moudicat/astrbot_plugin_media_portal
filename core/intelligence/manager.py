@@ -16,9 +16,9 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable, Iterable, Protocol, runtime_checkable
 
 from astrbot.api import logger
 
@@ -30,12 +30,42 @@ from .registry import CLIP_MODEL_KEY, DEFAULT_MODELS, FACE_MODEL_KEY
 
 _STATE_FILENAME = "state.json"
 
+# 通过 ``find_missing`` 探测「已就绪但仍缺 pip 依赖」的结果缓存时长（秒）。
+# 设得太短会让设置页频繁触发依赖检测；设得太长则用户手动 pip install 后看不到效果。
+_MISSING_DEPS_TTL_SECONDS = 30.0
+
+
+# 模型下载阶段，仅用于让前端展示更精准的进度文本。
+DOWNLOAD_PHASE_IDLE = ""
+DOWNLOAD_PHASE_CHECKING_DEPS = "checking_deps"
+DOWNLOAD_PHASE_INSTALLING_DEPS = "installing_deps"
+DOWNLOAD_PHASE_DOWNLOADING_FILES = "downloading_files"
+
+
+@runtime_checkable
+class DependencyInstaller(Protocol):
+    """模型可选依赖安装钩子。
+
+    - :meth:`find_missing` 同步返回当前缺失的 pip 规格列表（已安装的会被剔除）。
+    - :meth:`install` 异步安装传入的规格集合（通常一次 pip 调用完成）。
+
+    注入方式由插件入口 ``main.py`` 提供（接 AstrBot 内置 ``pip_installer``）；
+    在测试 / 调试场景可以传入 ``None`` 或自定义 stub，避免实际触发 pip。
+    """
+
+    def find_missing(self, specs: tuple[str, ...]) -> list[str]:  # noqa: D401 - protocol
+        ...
+
+    async def install(self, specs: tuple[str, ...]) -> None:  # noqa: D401 - protocol
+        ...
+
 
 @dataclass(slots=True)
 class _ModelRuntime:
     """每个模型在内存中的运行时状态。"""
 
     status: ModelStatus = ModelStatus.not_downloaded
+    phase: str = DOWNLOAD_PHASE_IDLE
     progress_bytes: int = 0
     total_bytes: int | None = None
     progress_files: int = 0
@@ -44,6 +74,11 @@ class _ModelRuntime:
     last_error: str = ""
     last_event_at: float = 0.0
     task: asyncio.Task[Any] | None = None
+    deps_total: int = 0
+    deps_installed: int = 0
+    deps_pending: list[str] = field(default_factory=list)
+    missing_deps_cache: list[str] = field(default_factory=list)
+    missing_deps_checked_at: float = 0.0
 
 
 @dataclass(slots=True)
@@ -57,6 +92,7 @@ class ModelSnapshot:
     homepage: str
     license: str
     status: ModelStatus
+    phase: str
     files_total: int
     files_complete: int
     bytes_total: int | None
@@ -69,6 +105,10 @@ class ModelSnapshot:
     files_done: int
     last_event_at: float
     target_dir: str
+    deps_total: int
+    deps_installed: int
+    deps_pending: list[str]
+    missing_deps: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +119,7 @@ class ModelSnapshot:
             "homepage": self.homepage,
             "license": self.license,
             "status": self.status.value,
+            "phase": self.phase,
             "files_total": self.files_total,
             "files_complete": self.files_complete,
             "bytes_total": self.bytes_total,
@@ -91,6 +132,10 @@ class ModelSnapshot:
             "files_done": self.files_done,
             "last_event_at": self.last_event_at,
             "target_dir": self.target_dir,
+            "deps_total": self.deps_total,
+            "deps_installed": self.deps_installed,
+            "deps_pending": list(self.deps_pending),
+            "missing_deps": list(self.missing_deps),
         }
 
 
@@ -117,6 +162,10 @@ class IntelligenceManager:
         hf_mirror_url: str = "",
         max_concurrent_downloads: int = 1,
         models: Iterable[ModelSpec] | None = None,
+        face_min_det_score: float = 0.6,
+        face_min_face_size: int = 60,
+        face_min_blur_var: float = 60.0,
+        dependency_installer: DependencyInstaller | None = None,
     ) -> None:
         self._plugin_data_dir = Path(plugin_data_dir)
         self._intelligence_dir = (self._plugin_data_dir / "intelligence").resolve()
@@ -127,6 +176,9 @@ class IntelligenceManager:
         self._feature_enabled = bool(feature_enabled)
         self._clip_enabled = bool(clip_enabled)
         self._face_enabled = bool(face_enabled)
+        self._face_min_det_score = max(0.0, min(1.0, float(face_min_det_score)))
+        self._face_min_face_size = max(0, int(face_min_face_size))
+        self._face_min_blur_var = max(0.0, float(face_min_blur_var))
 
         self._models: dict[str, ModelSpec] = {
             spec.key: spec for spec in (models or DEFAULT_MODELS)
@@ -142,6 +194,7 @@ class IntelligenceManager:
             root_dir=self._models_dir,
             hf_mirror_url=hf_mirror_url,
         )
+        self._dependency_installer = dependency_installer
 
         self._clip_index_db = (self._intelligence_dir / "clip_index.db").resolve()
         self._clip_store: Any = None  # ClipIndexStore，懒初始化
@@ -172,6 +225,15 @@ class IntelligenceManager:
     @property
     def face_enabled(self) -> bool:
         return self._feature_enabled and self._face_enabled
+
+    @property
+    def face_quality_thresholds(self) -> dict[str, float]:
+        """对外暴露的人脸质量阈值快照。"""
+        return {
+            "min_det_score": float(self._face_min_det_score),
+            "min_face_size": float(self._face_min_face_size),
+            "min_blur_var": float(self._face_min_blur_var),
+        }
 
     @property
     def hf_mirror_url(self) -> str:
@@ -434,9 +496,17 @@ class IntelligenceManager:
                 iter_image_records=iter_image_records,
                 thumb_dir=self._face_thumb_dir,
                 model_version=FACE_MODEL_KEY,
+                min_det_score=self._face_min_det_score,
+                min_face_size=self._face_min_face_size,
+                min_blur_var=self._face_min_blur_var,
             )
         else:
             self._face_worker._iter_records = iter_image_records  # type: ignore[attr-defined]
+            self._face_worker.update_quality_thresholds(
+                min_det_score=self._face_min_det_score,
+                min_face_size=self._face_min_face_size,
+                min_blur_var=self._face_min_blur_var,
+            )
 
         self._face_scan_task = asyncio.create_task(
             self._face_worker.run_full_scan(), name="face-index-scan"
@@ -507,10 +577,64 @@ class IntelligenceManager:
                 iter_image_records=_empty_iter,
                 thumb_dir=self._face_thumb_dir,
                 model_version=FACE_MODEL_KEY,
+                min_det_score=self._face_min_det_score,
+                min_face_size=self._face_min_face_size,
+                min_blur_var=self._face_min_blur_var,
             )
         return await self._face_worker.regenerate_thumbs(
             media_resolver, force=force
         )
+
+    async def prune_low_quality_faces(
+        self,
+        *,
+        min_det_score: float | None = None,
+        min_face_size: int | None = None,
+        min_blur_var: float | None = None,
+        ignore_blur_var_zero: bool = True,
+    ) -> dict[str, Any]:
+        """按当前（或显式传入的）阈值清理已有低质量人脸。
+
+        - 缺省时使用 manager 当前阈值，等价于「按现行设置回溯清理」；
+        - 删除完成后会调用 ``recount_persons`` 修正角色统计、清理空角色；
+        - 返回 ``{"removed": [face_ids], "thresholds": {...}}``。
+        """
+        if not self.face_enabled:
+            return {"removed": [], "thresholds": self.face_quality_thresholds}
+        store = await self.get_face_store()
+        if store is None:
+            return {"removed": [], "thresholds": self.face_quality_thresholds}
+
+        score = (
+            self._face_min_det_score if min_det_score is None else float(min_det_score)
+        )
+        size = (
+            self._face_min_face_size if min_face_size is None else int(min_face_size)
+        )
+        blur = (
+            self._face_min_blur_var if min_blur_var is None else float(min_blur_var)
+        )
+
+        removed = await store.prune_low_quality_faces(
+            min_det_score=max(0.0, score),
+            min_face_size=max(0.0, float(size)),
+            min_blur_var=max(0.0, blur),
+            ignore_blur_var_zero=ignore_blur_var_zero,
+        )
+
+        if removed:
+            await store.recount_persons()
+            for person in await store.list_persons():
+                if person.face_count == 0:
+                    await store.delete_person(person.id)
+        return {
+            "removed": removed,
+            "thresholds": {
+                "min_det_score": float(score),
+                "min_face_size": float(size),
+                "min_blur_var": float(blur),
+            },
+        }
 
     # ----- 状态查询 -----
 
@@ -538,6 +662,7 @@ class IntelligenceManager:
                     pass
 
         bytes_total = sum(f.size_bytes or 0 for f in spec.required_files) or None
+        missing_deps = self._compute_missing_deps(spec, runtime)
         return ModelSnapshot(
             key=spec.key,
             capability=spec.capability,
@@ -546,6 +671,7 @@ class IntelligenceManager:
             homepage=spec.homepage,
             license=spec.license,
             status=runtime.status,
+            phase=runtime.phase,
             files_total=len(spec.required_files),
             files_complete=files_complete,
             bytes_total=bytes_total,
@@ -558,7 +684,51 @@ class IntelligenceManager:
             files_done=runtime.progress_files,
             last_event_at=runtime.last_event_at,
             target_dir=str(self._downloader.model_dir(spec)),
+            deps_total=runtime.deps_total,
+            deps_installed=runtime.deps_installed,
+            deps_pending=list(runtime.deps_pending),
+            missing_deps=list(missing_deps),
         )
+
+    def _compute_missing_deps(
+        self, spec: ModelSpec, runtime: _ModelRuntime
+    ) -> list[str]:
+        """惰性探测「已声明但当前环境仍缺失」的 pip 依赖。
+
+        - 仅当模型处于 ``ready`` 状态时才执行探测：``not_downloaded``/``downloading``/
+          ``failed`` 等状态下没有意义；
+        - 结果按 :data:`_MISSING_DEPS_TTL_SECONDS` 缓存，避免高频前端轮询时反复
+          调用 ``installer.find_missing``；
+        - 任何异常都会被吞掉并返回空列表，保证状态查询不被阻塞。
+        """
+        installer = self._dependency_installer
+        specs = tuple(spec.extra_requirements or ())
+        if installer is None or not specs:
+            runtime.missing_deps_cache = []
+            runtime.missing_deps_checked_at = time.time()
+            return []
+        if runtime.status != ModelStatus.ready:
+            return list(runtime.missing_deps_cache)
+        now = time.time()
+        if (
+            runtime.missing_deps_checked_at
+            and now - runtime.missing_deps_checked_at < _MISSING_DEPS_TTL_SECONDS
+        ):
+            return list(runtime.missing_deps_cache)
+        try:
+            missing_raw = installer.find_missing(specs)
+        except Exception as exc:  # pragma: no cover - 检测失败不影响 UI
+            logger.debug("依赖探测失败 (%s): %s", spec.key, exc)
+            runtime.missing_deps_checked_at = now
+            return list(runtime.missing_deps_cache)
+        missing = [
+            str(item).strip()
+            for item in (missing_raw or [])
+            if str(item).strip()
+        ]
+        runtime.missing_deps_cache = missing
+        runtime.missing_deps_checked_at = now
+        return list(missing)
 
     # ----- 配置更新 -----
 
@@ -570,6 +740,9 @@ class IntelligenceManager:
         face_enabled: bool | None = None,
         hf_mirror_url: str | None = None,
         max_concurrent_downloads: int | None = None,
+        face_min_det_score: float | None = None,
+        face_min_face_size: int | None = None,
+        face_min_blur_var: float | None = None,
     ) -> None:
         clip_changed = clip_enabled is not None and bool(clip_enabled) != self._clip_enabled
         face_changed = face_enabled is not None and bool(face_enabled) != self._face_enabled
@@ -587,6 +760,27 @@ class IntelligenceManager:
         if max_concurrent_downloads is not None:
             new_value = max(1, min(3, int(max_concurrent_downloads)))
             self._download_sema = asyncio.Semaphore(new_value)
+        if face_min_det_score is not None:
+            try:
+                self._face_min_det_score = max(0.0, min(1.0, float(face_min_det_score)))
+            except (TypeError, ValueError):
+                pass
+        if face_min_face_size is not None:
+            try:
+                self._face_min_face_size = max(0, int(face_min_face_size))
+            except (TypeError, ValueError):
+                pass
+        if face_min_blur_var is not None:
+            try:
+                self._face_min_blur_var = max(0.0, float(face_min_blur_var))
+            except (TypeError, ValueError):
+                pass
+        if self._face_worker is not None:
+            self._face_worker.update_quality_thresholds(
+                min_det_score=self._face_min_det_score,
+                min_face_size=self._face_min_face_size,
+                min_blur_var=self._face_min_blur_var,
+            )
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -614,8 +808,12 @@ class IntelligenceManager:
                 logger.info("模型 %s 已在下载中，忽略重复请求。", model_key)
                 return
             runtime.status = ModelStatus.downloading
+            runtime.phase = DOWNLOAD_PHASE_IDLE
             runtime.last_error = ""
             runtime.last_event_at = time.time()
+            runtime.deps_total = 0
+            runtime.deps_installed = 0
+            runtime.deps_pending = []
             runtime.task = asyncio.create_task(
                 self._run_download(spec, progress_cb), name=f"intel-download-{model_key}"
             )
@@ -641,10 +839,16 @@ class IntelligenceManager:
                 pass
         await self._downloader.remove(spec)
         runtime.status = ModelStatus.not_downloaded
+        runtime.phase = DOWNLOAD_PHASE_IDLE
         runtime.progress_bytes = 0
         runtime.progress_files = 0
         runtime.last_error = ""
         runtime.current_file = ""
+        runtime.deps_total = 0
+        runtime.deps_installed = 0
+        runtime.deps_pending = []
+        runtime.missing_deps_cache = []
+        runtime.missing_deps_checked_at = 0.0
         runtime.last_event_at = time.time()
         if spec.capability == "clip":
             await self.reset_clip_engine()
@@ -687,6 +891,28 @@ class IntelligenceManager:
         runtime = self._runtimes[spec.key]
         runtime.total_files = len(spec.files)
 
+        try:
+            await self._ensure_extra_requirements(spec)
+        except asyncio.CancelledError:
+            runtime.status = ModelStatus.cancelled
+            runtime.last_error = "已取消"
+            runtime.phase = DOWNLOAD_PHASE_IDLE
+            runtime.last_event_at = time.time()
+            self._save_state_file()
+            raise
+        except Exception as exc:
+            logger.exception("模型 %s 安装依赖失败", spec.key)
+            runtime.status = ModelStatus.failed
+            runtime.last_error = f"依赖安装失败: {exc}" if str(exc) else "依赖安装失败"
+            runtime.phase = DOWNLOAD_PHASE_IDLE
+            runtime.last_event_at = time.time()
+            self._save_state_file()
+            return
+
+        runtime.phase = DOWNLOAD_PHASE_DOWNLOADING_FILES
+        runtime.current_file = ""
+        runtime.last_event_at = time.time()
+
         async def cb(event: DownloadEvent) -> None:
             runtime.progress_bytes = event.bytes_done
             runtime.total_bytes = event.bytes_total
@@ -719,8 +945,63 @@ class IntelligenceManager:
                 runtime.status = ModelStatus.failed
                 runtime.last_error = str(exc) or exc.__class__.__name__
             finally:
+                runtime.phase = DOWNLOAD_PHASE_IDLE
                 runtime.last_event_at = time.time()
                 self._save_state_file()
+
+    async def _ensure_extra_requirements(self, spec: ModelSpec) -> None:
+        """在真正下载文件之前，先确保 ``spec.extra_requirements`` 已经齐全。
+
+        - 没有注入 ``DependencyInstaller`` 或模型未声明依赖时直接跳过；
+        - ``find_missing`` 异常时不阻塞，仅记录日志后继续；
+        - ``install`` 阶段抛出的异常会冒泡，让调用方落到 ``failed`` 状态。
+        """
+        runtime = self._runtimes[spec.key]
+        runtime.deps_total = 0
+        runtime.deps_installed = 0
+        runtime.deps_pending = []
+
+        installer = self._dependency_installer
+        specs = tuple(spec.extra_requirements or ())
+        if installer is None or not specs:
+            return
+
+        runtime.phase = DOWNLOAD_PHASE_CHECKING_DEPS
+        runtime.current_file = ""
+        runtime.last_event_at = time.time()
+        try:
+            missing_raw = installer.find_missing(specs)
+        except Exception as exc:  # pragma: no cover - 检测阶段失败不阻塞
+            logger.warning("依赖预检失败，跳过自动安装: %s", exc)
+            return
+        missing = [str(item).strip() for item in (missing_raw or []) if str(item).strip()]
+        if not missing:
+            runtime.missing_deps_cache = []
+            runtime.missing_deps_checked_at = time.time()
+            return
+
+        runtime.phase = DOWNLOAD_PHASE_INSTALLING_DEPS
+        runtime.deps_total = len(missing)
+        runtime.deps_installed = 0
+        runtime.deps_pending = list(missing)
+        runtime.current_file = "、".join(missing[:3]) + (
+            "…" if len(missing) > 3 else ""
+        )
+        runtime.last_event_at = time.time()
+        logger.info(
+            "模型 %s 准备安装 %d 个依赖: %s",
+            spec.key,
+            len(missing),
+            ", ".join(missing),
+        )
+
+        await installer.install(tuple(missing))
+
+        runtime.deps_installed = runtime.deps_total
+        runtime.deps_pending = []
+        runtime.missing_deps_cache = []
+        runtime.missing_deps_checked_at = time.time()
+        runtime.last_event_at = time.time()
 
     # ----- 持久化 -----
 
@@ -732,6 +1013,12 @@ class IntelligenceManager:
         """启动时根据磁盘文件刷新状态。"""
         for key, spec in self._models.items():
             runtime = self._runtimes[key]
+            runtime.phase = DOWNLOAD_PHASE_IDLE
+            runtime.deps_total = 0
+            runtime.deps_installed = 0
+            runtime.deps_pending = []
+            runtime.missing_deps_cache = []
+            runtime.missing_deps_checked_at = 0.0
             if runtime.status in {ModelStatus.downloading, ModelStatus.cancelled}:
                 runtime.status = ModelStatus.not_downloaded
             complete, missing = self._downloader.model_status(spec)

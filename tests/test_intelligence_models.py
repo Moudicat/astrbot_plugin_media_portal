@@ -333,3 +333,245 @@ async def test_default_models_present() -> None:
     assert "insightface-buffalo-s" in keys
     capabilities = {spec.capability for spec in DEFAULT_MODELS}
     assert capabilities == {"clip", "face"}
+
+
+class _RecordingDependencyInstaller:
+    """收集 find_missing / install 调用以便单测断言。"""
+
+    def __init__(self, missing: list[str], *, fail: bool = False, delay: float = 0.0):
+        self._missing = missing
+        self._fail = fail
+        self._delay = delay
+        self.find_calls: list[tuple[str, ...]] = []
+        self.install_calls: list[tuple[str, ...]] = []
+        self.observed_phases: list[tuple[str, list[str]]] = []
+        self._spec_key: str | None = None
+        self._manager: IntelligenceManager | None = None
+
+    def bind(self, manager: IntelligenceManager, spec_key: str) -> None:
+        self._manager = manager
+        self._spec_key = spec_key
+
+    def find_missing(self, specs: tuple[str, ...]) -> list[str]:
+        self.find_calls.append(tuple(specs))
+        return list(self._missing)
+
+    async def install(self, specs: tuple[str, ...]) -> None:
+        self.install_calls.append(tuple(specs))
+        if self._manager is not None and self._spec_key is not None:
+            runtime = self._manager._runtimes[self._spec_key]  # type: ignore[attr-defined]
+            self.observed_phases.append((runtime.phase, list(runtime.deps_pending)))
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._fail:
+            raise RuntimeError("simulated pip failure")
+
+
+async def test_intelligence_manager_installs_missing_dependencies(tmp_path: Path) -> None:
+    payloads = {"weights.bin": b"data"}
+    spec = ModelSpec(
+        key="dep-model",
+        capability="clip",
+        display_name="Dep",
+        description="",
+        extra_requirements=("onnxruntime>=1.17", "tokenizers>=0.15"),
+        files=(
+            ModelFile(
+                relative_path="weights.bin",
+                url="https://huggingface.co/weights.bin",
+                size_bytes=len(b"data"),
+            ),
+        ),
+    )
+    installer = _RecordingDependencyInstaller(
+        missing=["onnxruntime>=1.17", "tokenizers>=0.15"]
+    )
+    async with _FakeHF(payloads) as hf:
+        manager = IntelligenceManager(
+            plugin_data_dir=tmp_path,
+            feature_enabled=True,
+            clip_enabled=True,
+            hf_mirror_url=f"http://{hf.host}:{hf.port}",
+            models=[spec],
+            dependency_installer=installer,
+        )
+        installer.bind(manager, spec.key)
+        await manager.start_download(spec.key)
+        runtime = manager._runtimes[spec.key]  # type: ignore[attr-defined]
+        await runtime.task  # type: ignore[arg-type]
+
+        assert installer.find_calls == [
+            ("onnxruntime>=1.17", "tokenizers>=0.15"),
+        ]
+        assert installer.install_calls == [
+            ("onnxruntime>=1.17", "tokenizers>=0.15"),
+        ]
+        assert installer.observed_phases == [
+            (
+                "installing_deps",
+                ["onnxruntime>=1.17", "tokenizers>=0.15"],
+            ),
+        ]
+
+        snap = manager.snapshot(spec.key)
+        assert snap is not None
+        assert snap.status == ModelStatus.ready
+        assert snap.phase == ""
+        assert snap.deps_total == 2
+        assert snap.deps_installed == 2
+        assert snap.deps_pending == []
+
+        await manager.shutdown()
+
+
+async def test_intelligence_manager_skips_install_when_nothing_missing(
+    tmp_path: Path,
+) -> None:
+    payloads = {"weights.bin": b"abc"}
+    spec = ModelSpec(
+        key="nodep-model",
+        capability="clip",
+        display_name="NoDep",
+        description="",
+        extra_requirements=("onnxruntime>=1.17",),
+        files=(
+            ModelFile(
+                relative_path="weights.bin",
+                url="https://huggingface.co/weights.bin",
+                size_bytes=len(b"abc"),
+            ),
+        ),
+    )
+    installer = _RecordingDependencyInstaller(missing=[])
+    async with _FakeHF(payloads) as hf:
+        manager = IntelligenceManager(
+            plugin_data_dir=tmp_path,
+            feature_enabled=True,
+            clip_enabled=True,
+            hf_mirror_url=f"http://{hf.host}:{hf.port}",
+            models=[spec],
+            dependency_installer=installer,
+        )
+        await manager.start_download(spec.key)
+        runtime = manager._runtimes[spec.key]  # type: ignore[attr-defined]
+        await runtime.task  # type: ignore[arg-type]
+
+        assert installer.find_calls == [("onnxruntime>=1.17",)]
+        assert installer.install_calls == []
+
+        snap = manager.snapshot(spec.key)
+        assert snap is not None
+        assert snap.status == ModelStatus.ready
+        assert snap.deps_total == 0
+        assert snap.deps_installed == 0
+        assert snap.deps_pending == []
+
+        await manager.shutdown()
+
+
+async def test_intelligence_manager_surfaces_missing_deps_for_ready_model(
+    tmp_path: Path,
+) -> None:
+    """已落地的模型若仍缺 pip 依赖，快照应当通过 ``missing_deps`` 暴露给前端。"""
+    payloads = {"weights.bin": b"already"}
+    spec = ModelSpec(
+        key="ready-missing-deps",
+        capability="clip",
+        display_name="ReadyMissing",
+        description="",
+        extra_requirements=("torch>=2.1",),
+        files=(
+            ModelFile(
+                relative_path="weights.bin",
+                url="https://huggingface.co/weights.bin",
+                size_bytes=len(b"already"),
+            ),
+        ),
+    )
+
+    async with _FakeHF(payloads) as hf:
+        # 提前把模型文件放到磁盘，模拟「老用户已下载好模型」场景。
+        downloader = ModelDownloader(
+            root_dir=tmp_path / "intelligence" / "models",
+            hf_mirror_url=f"http://{hf.host}:{hf.port}",
+        )
+        target = downloader.file_path(spec, spec.files[0])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"already")
+
+        installer = _RecordingDependencyInstaller(missing=["torch>=2.1"])
+        manager = IntelligenceManager(
+            plugin_data_dir=tmp_path,
+            feature_enabled=True,
+            clip_enabled=True,
+            hf_mirror_url=f"http://{hf.host}:{hf.port}",
+            models=[spec],
+            dependency_installer=installer,
+        )
+
+        snap = manager.snapshot(spec.key)
+        assert snap is not None
+        assert snap.status == ModelStatus.ready
+        assert snap.missing_deps == ["torch>=2.1"]
+
+        # 触发「补装依赖」：start_download 是幂等的，文件已完整不会重复下载，
+        # 但会跑一遍 install 流程，跑完后 missing_deps 应当变空。
+        await manager.start_download(spec.key)
+        runtime = manager._runtimes[spec.key]  # type: ignore[attr-defined]
+        await runtime.task  # type: ignore[arg-type]
+
+        assert installer.install_calls == [("torch>=2.1",)]
+        snap_after = manager.snapshot(spec.key)
+        assert snap_after is not None
+        assert snap_after.status == ModelStatus.ready
+        assert snap_after.missing_deps == []
+
+        await manager.shutdown()
+
+
+async def test_intelligence_manager_marks_failure_when_install_raises(
+    tmp_path: Path,
+) -> None:
+    payloads = {"weights.bin": b"abc"}
+    spec = ModelSpec(
+        key="failing-dep-model",
+        capability="clip",
+        display_name="FailingDep",
+        description="",
+        extra_requirements=("onnxruntime>=1.17",),
+        files=(
+            ModelFile(
+                relative_path="weights.bin",
+                url="https://huggingface.co/weights.bin",
+                size_bytes=len(b"abc"),
+            ),
+        ),
+    )
+    installer = _RecordingDependencyInstaller(
+        missing=["onnxruntime>=1.17"], fail=True
+    )
+    async with _FakeHF(payloads) as hf:
+        manager = IntelligenceManager(
+            plugin_data_dir=tmp_path,
+            feature_enabled=True,
+            clip_enabled=True,
+            hf_mirror_url=f"http://{hf.host}:{hf.port}",
+            models=[spec],
+            dependency_installer=installer,
+        )
+        await manager.start_download(spec.key)
+        runtime = manager._runtimes[spec.key]  # type: ignore[attr-defined]
+        await runtime.task  # type: ignore[arg-type]
+
+        assert installer.install_calls == [("onnxruntime>=1.17",)]
+        # 安装失败应标记 failed 且不会继续触发文件下载
+        snap = manager.snapshot(spec.key)
+        assert snap is not None
+        assert snap.status == ModelStatus.failed
+        assert "依赖安装失败" in snap.last_error
+        assert snap.phase == ""
+        # 模型文件不应被下载
+        target = manager.downloader.file_path(spec, spec.files[0])
+        assert not target.exists()
+
+        await manager.shutdown()

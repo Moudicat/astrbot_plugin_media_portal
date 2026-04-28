@@ -75,6 +75,30 @@ async def test_index_store_dim_mismatch(tmp_path: Path) -> None:
     await store.close()
 
 
+async def test_search_handles_nan_inf_vectors(tmp_path: Path) -> None:
+    """坏向量（NaN / Inf）不能让 score 退化成 NaN 进入响应链路。"""
+
+    store = ClipIndexStore(db_path=tmp_path / "clip.db", dim=3)
+    await store.initialize()
+
+    healthy = _normalize([1.0, 0.0, 0.0])
+    nan_vec = [float("nan"), 0.0, 0.0]
+    inf_vec = [float("inf"), 0.0, 0.0]
+    await store.upsert(1, "sha-1", healthy)
+    await store.upsert(2, "sha-2", nan_vec)
+    await store.upsert(3, "sha-3", inf_vec)
+
+    results = await store.search(healthy, top_k=10)
+    by_id = {mid: score for mid, score in results}
+    assert math.isfinite(by_id[1]) and by_id[1] == pytest.approx(1.0, rel=1e-3)
+    # 坏向量必须返回有限数（约定为 0.0），且不能排在健康向量之前
+    assert math.isfinite(by_id[2]) and by_id[2] == 0.0
+    assert math.isfinite(by_id[3]) and by_id[3] == 0.0
+    assert results[0][0] == 1
+
+    await store.close()
+
+
 async def test_worker_full_scan_indexes_only_missing(tmp_path: Path) -> None:
     store = ClipIndexStore(db_path=tmp_path / "clip.db", dim=2)
     await store.initialize()

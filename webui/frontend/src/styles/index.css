@@ -767,6 +767,21 @@ button.block {
   gap: 14px;
   min-height: calc(100vh - 96px);
   align-items: start;
+  transition: grid-template-columns var(--transition-base);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .layout.sidebar-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .layout.sidebar-collapsed > .sidebar-wrap {
+    display: none;
+  }
+}
+
+.topbar-sidebar-toggle[aria-pressed="false"] {
+  color: var(--primary, #6366f1);
 }
 
 .sidebar-wrap {
@@ -875,6 +890,11 @@ button.block {
 .input-wrap .icon-slot {
   position: absolute;
   left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-subtle);
   pointer-events: none;
 }
@@ -1237,11 +1257,11 @@ button.block {
   justify-content: center;
 }
 
-.toolbar-search.is-clip .input-wrap .icon-slot,
-.toolbar-search.is-clip .search-submit {
-  color: #fff;
+.toolbar-search.is-clip .input-wrap .icon-slot {
+  color: var(--primary);
 }
 .toolbar-search.is-clip .search-submit {
+  color: #fff;
   background: var(--primary-gradient, linear-gradient(135deg, #6366f1, #8b5cf6));
 }
 .toolbar-search.is-clip .input-wrap input[type="search"] {
@@ -1258,7 +1278,24 @@ button.block {
   border-radius: var(--radius-sm);
   background: var(--surface-1, var(--surface));
 }
-.search-mode-toggle .mode-pill {
+
+/* 独立的「关键词 / 语义」切换行，移动端在搜索框上方单独成行。
+   PC 端始终隐藏，由 toolbar-search 内的 toggle 承担相同功能。 */
+.search-mode-toggle-row {
+  display: none;
+  align-items: stretch;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1, var(--surface));
+}
+.search-mode-toggle-row .mode-pill {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.search-mode-toggle .mode-pill,
+.search-mode-toggle-row .mode-pill {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1274,45 +1311,25 @@ button.block {
   white-space: nowrap;
   transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
-.search-mode-toggle .mode-pill:hover:not(:disabled):not(.active) {
+.search-mode-toggle .mode-pill:hover:not(:disabled):not(.active),
+.search-mode-toggle-row .mode-pill:hover:not(:disabled):not(.active) {
   color: var(--text);
   background: var(--surface-hover);
 }
-.search-mode-toggle .mode-pill.active {
+.search-mode-toggle .mode-pill.active,
+.search-mode-toggle-row .mode-pill.active {
   color: #fff;
   background: var(--primary-gradient, linear-gradient(135deg, #6366f1, #8b5cf6));
   box-shadow: var(--shadow-sm);
 }
-.search-mode-toggle .mode-pill:disabled {
+.search-mode-toggle .mode-pill:disabled,
+.search-mode-toggle-row .mode-pill:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
-.search-mode-toggle .mode-pill .icon {
+.search-mode-toggle .mode-pill .icon,
+.search-mode-toggle-row .mode-pill .icon {
   flex: none;
-}
-
-.clip-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--primary) 25%, var(--border));
-  color: var(--text);
-  font-size: 12.5px;
-  flex-wrap: wrap;
-}
-.clip-banner :deep(svg),
-.clip-banner > svg {
-  color: var(--primary);
-  flex: none;
-}
-.clip-banner .clip-banner-count {
-  font-size: 12px;
-}
-.clip-banner .clip-banner-mode {
-  margin-left: auto;
 }
 
 .toolbar-actions {
@@ -3734,7 +3751,7 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
     justify-content: center;
   }
 
-  /* 移动端搜索栏：占据剩余空间，更高触控区 + 醒目搜索按钮 + 清除按钮 */
+  /* 移动端搜索栏：搜索框 + 提交按钮一行（toggle 已被提到 toolbar 之上的独立行）。 */
   .toolbar-search {
     flex: 1 1 auto;
     min-width: 0;
@@ -3743,6 +3760,7 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
 
   .toolbar-search .input-wrap {
     min-width: 0;
+    flex: 1 1 0;
   }
 
   .toolbar-search .input-wrap input {
@@ -3775,6 +3793,29 @@ html[data-theme="light"] .skeleton-card .sk-line::after {
     min-width: 44px;
     padding: 0;
     justify-content: center;
+  }
+
+  /* toolbar 内的 toggle 在移动端隐藏，由独立的 search-mode-toggle-row 接管。 */
+  .toolbar-search .search-mode-toggle.hide-on-mobile {
+    display: none;
+  }
+
+  /* 独立成行的切换 tab：占满 panel 整宽，比 PC 端略矮一档。 */
+  .search-mode-toggle-row {
+    display: flex;
+    width: 100%;
+  }
+  .search-mode-toggle-row .mode-pill {
+    min-height: 32px;
+    padding: 4px 10px;
+    font-size: 12.5px;
+    justify-content: center;
+  }
+  .search-mode-toggle-row .mode-pill > span {
+    display: inline;
+  }
+  .search-mode-toggle-row .mode-pill .icon {
+    flex: none;
   }
 
   .kind-tabs {
@@ -4738,6 +4779,12 @@ html[data-grid-mode="list"] .media-grid .media-card .list-actions button.danger:
 
 .view-mode-btn.mobile-inline {
   display: none;
+}
+
+/* CLIP 语义搜索模式下，原本只在 PC 端的 view 切换按钮（曾在 clip-banner 中）
+   被移除；通过 force-show 让 toolbar-actions 中的同款按钮在 PC 端也露出。 */
+.view-mode-btn.mobile-inline.force-show {
+  display: inline-flex;
 }
 
 @media (max-width: 860px) {

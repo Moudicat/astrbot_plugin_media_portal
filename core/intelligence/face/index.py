@@ -53,6 +53,8 @@ class FaceRecord:
     thumb_path: str
     model_version: str
     created_at: float
+    blur_var: float = 0.0
+    """112×112 对齐人脸的 Laplacian 方差（清晰度），0 表示历史数据未计算。"""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +65,7 @@ class FaceRecord:
             "bbox": list(self.bbox),
             "kps": [list(p) for p in self.kps],
             "det_score": self.det_score,
+            "blur_var": self.blur_var,
             "thumb_path": self.thumb_path,
             "model_version": self.model_version,
             "created_at": self.created_at,
@@ -98,7 +101,7 @@ class FaceIndexStore:
     线程安全：所有写操作通过 :class:`asyncio.Lock` 串行化；读操作仅持有连接，无显式锁。
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: Path, *, dim: int = 512) -> None:
         self._db_path = Path(db_path)
@@ -141,6 +144,7 @@ class FaceIndexStore:
                     bbox TEXT NOT NULL DEFAULT '[]',
                     kps TEXT NOT NULL DEFAULT '[]',
                     det_score REAL NOT NULL DEFAULT 0,
+                    blur_var REAL NOT NULL DEFAULT 0,
                     embedding BLOB NOT NULL,
                     thumb_path TEXT NOT NULL DEFAULT '',
                     model_version TEXT NOT NULL DEFAULT '',
@@ -149,6 +153,7 @@ class FaceIndexStore:
                 )
                 """
             )
+            await self._migrate_blur_var_column_unlocked()
             await self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS face_meta (
@@ -184,6 +189,18 @@ class FaceIndexStore:
             if self._conn is not None:
                 await self._conn.close()
                 self._conn = None
+
+    async def _migrate_blur_var_column_unlocked(self) -> None:
+        """对历史 schema=1 的库追加 ``blur_var`` 列。"""
+        assert self._conn is not None
+        cursor = await self._conn.execute("PRAGMA table_info(face_records)")
+        rows = await cursor.fetchall()
+        columns = {str(row["name"]) for row in rows}
+        if "blur_var" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE face_records ADD COLUMN blur_var REAL NOT NULL DEFAULT 0"
+            )
+            await self._conn.commit()
 
     # ----- person 管理 -----
 
@@ -354,6 +371,7 @@ class FaceIndexStore:
         person_id: int | None = None,
         thumb_path: str = "",
         model_version: str = "",
+        blur_var: float = 0.0,
     ) -> int:
         if len(embedding) != self._dim:
             raise ValueError(
@@ -365,9 +383,9 @@ class FaceIndexStore:
             cursor = await self._conn.execute(
                 """
                 INSERT INTO face_records(
-                    media_id, sha256, person_id, bbox, kps, det_score,
+                    media_id, sha256, person_id, bbox, kps, det_score, blur_var,
                     embedding, thumb_path, model_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(media_id),
@@ -376,6 +394,7 @@ class FaceIndexStore:
                     json.dumps(list(bbox)),
                     json.dumps([list(p) for p in kps]),
                     float(det_score),
+                    float(blur_var or 0.0),
                     _pack_vector(embedding),
                     str(thumb_path or ""),
                     str(model_version or ""),
@@ -559,6 +578,71 @@ class FaceIndexStore:
                 )
             return out
 
+    async def prune_low_quality_faces(
+        self,
+        *,
+        min_det_score: float = 0.0,
+        min_face_size: float = 0.0,
+        min_blur_var: float = 0.0,
+        ignore_blur_var_zero: bool = True,
+    ) -> list[int]:
+        """根据阈值删除已有低质量人脸记录，返回被删除的 ``face_id`` 列表。
+
+        - ``min_det_score`` / ``min_face_size``：直接基于 DB 字段判定；
+        - ``min_blur_var``：仅当存量记录已经计算过清晰度时（blur_var > 0）参与判定；
+          ``ignore_blur_var_zero=True``（默认）会跳过历史未计算的记录，避免误删。
+        """
+        async with self._lock:
+            assert self._conn is not None
+            cursor = await self._conn.execute(
+                "SELECT id, bbox, det_score, blur_var FROM face_records"
+            )
+            rows = await cursor.fetchall()
+
+        to_delete: list[int] = []
+        for row in rows:
+            score = float(row["det_score"] or 0.0)
+            blur = float(row["blur_var"] or 0.0)
+            try:
+                bbox_arr = json.loads(row["bbox"]) if row["bbox"] else []
+            except (TypeError, ValueError):
+                bbox_arr = []
+            if isinstance(bbox_arr, list) and len(bbox_arr) >= 4:
+                width = max(0.0, float(bbox_arr[2]) - float(bbox_arr[0]))
+                height = max(0.0, float(bbox_arr[3]) - float(bbox_arr[1]))
+                short_side = min(width, height)
+            else:
+                short_side = 0.0
+
+            drop = False
+            if min_det_score > 0 and score < min_det_score:
+                drop = True
+            elif min_face_size > 0 and short_side < min_face_size:
+                drop = True
+            elif min_blur_var > 0 and blur > 0 and blur < min_blur_var:
+                drop = True
+            elif (
+                min_blur_var > 0
+                and not ignore_blur_var_zero
+                and blur < min_blur_var
+            ):
+                drop = True
+            if drop:
+                to_delete.append(int(row["id"]))
+
+        if not to_delete:
+            return []
+
+        async with self._lock:
+            assert self._conn is not None
+            placeholders = ",".join("?" * len(to_delete))
+            await self._conn.execute(
+                f"DELETE FROM face_records WHERE id IN ({placeholders})",
+                to_delete,
+            )
+            await self._conn.commit()
+        return to_delete
+
     async def delete_faces_for_media(self, media_id: int) -> int:
         async with self._lock:
             assert self._conn is not None
@@ -639,6 +723,10 @@ class FaceIndexStore:
             embedding = _unpack_vector(row["embedding"])
         except ValueError:
             embedding = []
+        try:
+            blur_var = float(row["blur_var"] or 0.0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            blur_var = 0.0
         return FaceRecord(
             id=int(row["id"]),
             media_id=int(row["media_id"]),
@@ -651,6 +739,7 @@ class FaceIndexStore:
             thumb_path=str(row["thumb_path"] or ""),
             model_version=str(row["model_version"] or ""),
             created_at=float(row["created_at"] or 0.0),
+            blur_var=blur_var,
         )
 
     @staticmethod

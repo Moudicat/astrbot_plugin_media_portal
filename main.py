@@ -29,6 +29,40 @@ from .core.utils import (
 from .webui import WebUIServer
 
 
+class _AstrbotDependencyInstaller:
+    """把 AstrBot 内置的 ``pip_installer`` 适配成 :class:`DependencyInstaller` 协议。
+
+    - :meth:`find_missing` 优先尝试 ``find_missing_requirements_from_lines``，缺失时退化为
+      把所有声明视为「待安装」，让上层统一交给 pip 做幂等处理。
+    - :meth:`install` 把所有规格用换行连接，一次性交给 pip，行为与
+      ``pip install -r requirements.txt`` 等价，自动遵守 AstrBot 的镜像/约束。
+    """
+
+    @staticmethod
+    def find_missing(specs: tuple[str, ...]) -> list[str]:
+        try:
+            from astrbot.core.utils.requirements_utils import (
+                find_missing_requirements_from_lines,
+            )
+        except Exception as exc:  # pragma: no cover - 兼容老版本 AstrBot
+            logger.debug("find_missing_requirements_from_lines 不可用: %s", exc)
+            return list(specs)
+        try:
+            missing = find_missing_requirements_from_lines(list(specs))
+        except Exception as exc:  # pragma: no cover - 检测器内部异常时不阻塞
+            logger.warning("依赖检测失败，将整体交给 pip 处理: %s", exc)
+            return list(specs)
+        return [str(item) for item in (missing or []) if str(item).strip()]
+
+    @staticmethod
+    async def install(specs: tuple[str, ...]) -> None:
+        if not specs:
+            return
+        from astrbot.core import pip_installer
+
+        await pip_installer.install(package_name="\n".join(specs))
+
+
 @register(
     "media_portal",
     "moudicat",
@@ -69,6 +103,10 @@ class MediaPortalPlugin(Star):
             face_enabled=self.settings.intelligence.face_enabled,
             hf_mirror_url=self.settings.intelligence.hf_mirror_url,
             max_concurrent_downloads=self.settings.intelligence.max_concurrent_downloads,
+            face_min_det_score=self.settings.intelligence.face_min_det_score,
+            face_min_face_size=self.settings.intelligence.face_min_face_size,
+            face_min_blur_var=self.settings.intelligence.face_min_blur_var,
+            dependency_installer=_AstrbotDependencyInstaller(),
         )
         self.webui_server: WebUIServer | None = None
 

@@ -270,3 +270,145 @@ async def test_recluster_uses_dbscan_labels(tmp_path: Path, monkeypatch: pytest.
     assert cluster_counts == [1, 2, 2]
 
     await store.close()
+
+
+async def test_face_store_prune_low_quality(tmp_path: Path) -> None:
+    """prune_low_quality_faces 应当按 det_score / 边长 / 清晰度 删除存量记录。"""
+    store = FaceIndexStore(db_path=tmp_path / "face.db", dim=2)
+    await store.initialize()
+
+    cases = [
+        # (bbox, score, blur)
+        ((0.0, 0.0, 100.0, 100.0), 0.95, 200.0),  # 高质量，应保留
+        ((0.0, 0.0, 100.0, 100.0), 0.40, 200.0),  # det_score 太低
+        ((0.0, 0.0, 30.0, 30.0), 0.95, 200.0),  # 边长过小
+        ((0.0, 0.0, 100.0, 100.0), 0.95, 10.0),  # 清晰度过低
+        ((0.0, 0.0, 100.0, 100.0), 0.95, 0.0),  # 历史数据未计算 blur，应被忽略
+    ]
+    ids: list[int] = []
+    for i, (bbox, score, blur) in enumerate(cases):
+        fid = await store.add_face(
+            media_id=i + 1,
+            sha256=f"s{i}",
+            bbox=bbox,
+            kps=[],
+            det_score=score,
+            embedding=_normalize([1.0, float(i + 1)]),
+            blur_var=blur,
+        )
+        ids.append(fid)
+
+    removed = await store.prune_low_quality_faces(
+        min_det_score=0.6,
+        min_face_size=60,
+        min_blur_var=60.0,
+    )
+    assert set(removed) == {ids[1], ids[2], ids[3]}
+
+    survivors = {face.id for face in await store.list_faces_unassigned(limit=100)}
+    assert survivors == {ids[0], ids[4]}
+
+    # 进一步验证：禁用 ignore_blur_var_zero 时连历史空值都会清掉。
+    removed2 = await store.prune_low_quality_faces(
+        min_blur_var=60.0,
+        ignore_blur_var_zero=False,
+    )
+    assert set(removed2) == {ids[4]}
+
+    await store.close()
+
+
+async def test_face_store_blur_var_persisted(tmp_path: Path) -> None:
+    store = FaceIndexStore(db_path=tmp_path / "face.db", dim=2)
+    await store.initialize()
+    fid = await store.add_face(
+        media_id=1,
+        sha256="x",
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        kps=[],
+        det_score=0.9,
+        embedding=_normalize([1.0, 2.0]),
+        blur_var=123.4,
+    )
+    record = await store.get_face(fid)
+    assert record is not None
+    assert record.blur_var == pytest.approx(123.4)
+    assert record.to_dict()["blur_var"] == pytest.approx(123.4)
+    await store.close()
+
+
+async def test_face_store_legacy_schema_migrates_blur_var(tmp_path: Path) -> None:
+    """模拟 schema=1 的旧库，再次 initialize 应当自动补上 blur_var 列。"""
+    import aiosqlite
+
+    db_path = tmp_path / "face.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            """
+            CREATE TABLE face_persons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL DEFAULT '',
+                sample_face_id INTEGER,
+                face_count INTEGER NOT NULL DEFAULT 0,
+                centroid BLOB,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE face_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                sha256 TEXT NOT NULL DEFAULT '',
+                person_id INTEGER,
+                bbox TEXT NOT NULL DEFAULT '[]',
+                kps TEXT NOT NULL DEFAULT '[]',
+                det_score REAL NOT NULL DEFAULT 0,
+                embedding BLOB NOT NULL,
+                thumb_path TEXT NOT NULL DEFAULT '',
+                model_version TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE face_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE face_scans (
+                media_id INTEGER PRIMARY KEY,
+                scanned_at REAL NOT NULL,
+                face_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        await conn.execute(
+            "INSERT INTO face_records(media_id, sha256, bbox, kps, det_score, embedding, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "old",
+                "[0,0,80,80]",
+                "[]",
+                0.7,
+                serialize_vector(_normalize([1.0, 2.0])),
+                0.0,
+            ),
+        )
+        await conn.commit()
+
+    store = FaceIndexStore(db_path=db_path, dim=2)
+    await store.initialize()
+    record = await store.get_face(1)
+    assert record is not None
+    assert record.blur_var == pytest.approx(0.0)
+    await store.close()

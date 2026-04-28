@@ -131,6 +131,24 @@
         "default": false,
         "hint": "开启前请在设置面板下载 InsightFace buffalo_s 模型并安装 requirements-face.txt。"
       },
+      "face_min_det_score": {
+        "description": "人脸最小检测分数",
+        "type": "float",
+        "default": 0.6,
+        "hint": "InsightFace SCRFD 给出的 0~1 置信度，低于该值不入库。建议 0.5~0.75，越高越严格。"
+      },
+      "face_min_face_size": {
+        "description": "人脸最小边长（像素）",
+        "type": "int",
+        "default": 60,
+        "hint": "原图中人脸框较短边像素小于该值时丢弃，过滤掉远景小脸。建议 40~120。"
+      },
+      "face_min_blur_var": {
+        "description": "人脸最小清晰度（拉普拉斯方差）",
+        "type": "float",
+        "default": 60.0,
+        "hint": "对 112×112 对齐人脸做 Laplacian 方差，值越小越糊；低于该阈值不入库。建议 40~120，0 表示不过滤。"
+      },
       "max_concurrent_downloads": {
         "description": "模型并发下载数",
         "type": "int",

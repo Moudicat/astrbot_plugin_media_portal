@@ -211,6 +211,7 @@ import { useConfigStore } from "@/stores/config";
 import { useToastStore } from "@/stores/toast";
 import { useConfirmStore } from "@/stores/confirm";
 import { useUiStore } from "@/stores/ui";
+import { useProgressStore } from "@/stores/progress";
 
 const { t } = useI18n();
 const auth = useAuthStore();
@@ -218,6 +219,7 @@ const config = useConfigStore();
 const toast = useToastStore();
 const confirm = useConfirmStore();
 const ui = useUiStore();
+const progressStore = useProgressStore();
 
 const persons = ref<FacePerson[]>([]);
 const selectedId = ref<number | null>(null);
@@ -314,6 +316,7 @@ async function onScan() {
   try {
     await intelligenceApi.faceScan();
     toast.push(t("face.scanQueued"), "success");
+    progressStore.bump();
     await refreshStatus();
   } catch (error) {
     toast.push((error as Error).message, "error");

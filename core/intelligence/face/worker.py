@@ -33,6 +33,9 @@ IterImageRecords = Callable[[], Awaitable[Iterable[tuple[int, str, str]]]]
 class FaceWorkerStats:
     media_processed: int = 0
     faces_indexed: int = 0
+    faces_filtered: int = 0
+    """因为不满足质量阈值（分数 / 尺寸 / 清晰度）而被丢弃的面孔数。"""
+
     skipped: int = 0
     failed: int = 0
     last_run_at: float = 0.0
@@ -51,6 +54,9 @@ class FaceIndexWorker:
         thumb_dir: Path,
         model_version: str = "",
         max_retries: int = 1,
+        min_det_score: float = 0.0,
+        min_face_size: int = 0,
+        min_blur_var: float = 0.0,
     ) -> None:
         self._store = store
         self._engine = engine
@@ -60,10 +66,36 @@ class FaceIndexWorker:
         self._thumb_dir.mkdir(parents=True, exist_ok=True)
         self._model_version = model_version
         self._max_retries = max(0, int(max_retries))
+        self._min_det_score = max(0.0, float(min_det_score))
+        self._min_face_size = max(0, int(min_face_size))
+        self._min_blur_var = max(0.0, float(min_blur_var))
         self._failed_media_ids: set[int] = set()
         self._stats = FaceWorkerStats(failed_media_ids=self._failed_media_ids)
         self._stop_event = asyncio.Event()
         self._running_lock = asyncio.Lock()
+
+    def update_quality_thresholds(
+        self,
+        *,
+        min_det_score: float | None = None,
+        min_face_size: int | None = None,
+        min_blur_var: float | None = None,
+    ) -> None:
+        """运行时调整质量阈值，下一轮扫描立即生效。"""
+        if min_det_score is not None:
+            self._min_det_score = max(0.0, float(min_det_score))
+        if min_face_size is not None:
+            self._min_face_size = max(0, int(min_face_size))
+        if min_blur_var is not None:
+            self._min_blur_var = max(0.0, float(min_blur_var))
+
+    @property
+    def quality_thresholds(self) -> dict[str, float]:
+        return {
+            "min_det_score": self._min_det_score,
+            "min_face_size": float(self._min_face_size),
+            "min_blur_var": self._min_blur_var,
+        }
 
     @property
     def stats(self) -> FaceWorkerStats:
@@ -136,8 +168,15 @@ class FaceIndexWorker:
         abs_path: str,
         detections: list[FaceDetection],
     ) -> None:
-        valid: list[FaceDetection] = [d for d in detections if d.embedding]
-        for det in valid:
+        accepted: list[FaceDetection] = []
+        for det in detections:
+            if not det.embedding:
+                continue
+            if not self._passes_quality(det):
+                self._stats.faces_filtered += 1
+                continue
+            accepted.append(det)
+        for det in accepted:
             face_id = await self._store.add_face(
                 media_id=media_id,
                 sha256=sha256,
@@ -145,6 +184,7 @@ class FaceIndexWorker:
                 kps=det.kps,
                 det_score=det.det_score,
                 embedding=det.embedding,
+                blur_var=det.blur_var,
                 model_version=self._model_version,
             )
             assignment = await self._clusterer.assign_face(
@@ -155,7 +195,21 @@ class FaceIndexWorker:
             if thumb_rel:
                 await self._store.set_face_thumb(face_id, thumb_rel)
             self._stats.faces_indexed += 1
-        await self._store.mark_scanned(media_id, len(valid))
+        await self._store.mark_scanned(media_id, len(accepted))
+
+    def _passes_quality(self, det: FaceDetection) -> bool:
+        """根据当前阈值判断检测结果是否值得入库。"""
+        if det.det_score < self._min_det_score:
+            return False
+        if self._min_face_size > 0:
+            x1, y1, x2, y2 = det.bbox
+            short_side = min(max(0.0, x2 - x1), max(0.0, y2 - y1))
+            if short_side < self._min_face_size:
+                return False
+        if self._min_blur_var > 0 and det.blur_var > 0:
+            if det.blur_var < self._min_blur_var:
+                return False
+        return True
 
     async def _save_thumb(
         self, face_id: int, abs_path: str, det: FaceDetection

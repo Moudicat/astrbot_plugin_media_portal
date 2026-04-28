@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import struct
 import time
 from pathlib import Path
@@ -298,9 +299,24 @@ class ClipIndexStore:
 
 
 def _dot(a: list[float], b: list[float]) -> float:
+    """安全余弦点积。
+
+    向量都已 L2 归一化，因此 ``sum(a*b)`` 即余弦相似度。这里额外做两件事：
+
+    - 维度不一致时返回 ``0.0``，避免上层抛错；
+    - 任一向量包含 ``NaN`` / ``Inf`` 时直接返回 ``0.0``，防止脏数据
+      传染到检索结果（NaN 进入 score 会被序列化为 ``null``，并破坏排序）。
+    """
+
     if len(a) != len(b):
         return 0.0
-    return float(sum(x * y for x, y in zip(a, b)))
+    total = 0.0
+    for x, y in zip(a, b):
+        product = x * y
+        if not math.isfinite(product):
+            return 0.0
+        total += product
+    return float(total) if math.isfinite(total) else 0.0
 
 
 def serialize_vector(vec: list[float]) -> bytes:

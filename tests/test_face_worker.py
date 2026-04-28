@@ -134,6 +134,91 @@ async def test_worker_marks_failed(tmp_path: Path) -> None:
     await store.close()
 
 
+async def test_worker_filters_low_quality(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超过阈值的人脸入库，糊脸 / 小脸 / 低分被丢弃并计入 faces_filtered。"""
+    store = FaceIndexStore(db_path=tmp_path / "face.db", dim=3)
+    await store.initialize()
+    clusterer = FaceClusterer(store, assign_threshold=0.6)
+
+    detections = {
+        "/img/mix.jpg": [
+            FaceDetection(  # 高质量，应入库
+                bbox=(0.0, 0.0, 120.0, 120.0),
+                kps=[(1.0, 1.0)] * 5,
+                det_score=0.95,
+                embedding=_normalize([1.0, 0.0, 0.0]),
+                blur_var=200.0,
+            ),
+            FaceDetection(  # 边长不够
+                bbox=(0.0, 0.0, 30.0, 30.0),
+                kps=[(2.0, 2.0)] * 5,
+                det_score=0.95,
+                embedding=_normalize([0.95, 0.05, 0.0]),
+                blur_var=200.0,
+            ),
+            FaceDetection(  # 检测分数不够
+                bbox=(0.0, 0.0, 120.0, 120.0),
+                kps=[(3.0, 3.0)] * 5,
+                det_score=0.4,
+                embedding=_normalize([0.0, 1.0, 0.0]),
+                blur_var=200.0,
+            ),
+            FaceDetection(  # Laplacian 方差不够
+                bbox=(0.0, 0.0, 120.0, 120.0),
+                kps=[(4.0, 4.0)] * 5,
+                det_score=0.95,
+                embedding=_normalize([0.0, 0.0, 1.0]),
+                blur_var=10.0,
+            ),
+        ]
+    }
+    engine = _FakeEngine(detections)
+
+    async def iter_records():
+        return [(1, "sha-1", "/img/mix.jpg")]
+
+    monkeypatch.setattr(
+        "astrbot_plugin_media_portal.core.intelligence.face.worker._crop_and_save_thumb",
+        lambda *args, **kwargs: None,
+    )
+
+    worker = FaceIndexWorker(
+        store=store,
+        engine=engine,  # type: ignore[arg-type]
+        clusterer=clusterer,
+        iter_image_records=iter_records,
+        thumb_dir=tmp_path / "thumbs",
+        model_version="test-face",
+        max_retries=0,
+        min_det_score=0.6,
+        min_face_size=60,
+        min_blur_var=60.0,
+    )
+
+    stats = await worker.run_full_scan()
+    assert stats.faces_indexed == 1
+    assert stats.faces_filtered == 3
+    assert await store.count_faces() == 1
+
+    # 落库的那张人脸应当带上原始 blur_var
+    persons = await store.list_persons()
+    assert len(persons) == 1
+    faces = await store.list_faces_by_person(persons[0].id)
+    assert faces[0].blur_var == pytest.approx(200.0)
+
+    # 阈值热更新后再次扫描（同一 media 已 marked，跳过；这里清掉重扫）
+    await store.forget_scan(1)
+    worker.update_quality_thresholds(min_blur_var=0.0)
+    stats2 = await worker.run_full_scan()
+    # 仅放宽了 blur 阈值：原本糊脸通过；size/det_score 阈值未变，依旧过滤 2 张
+    assert stats2.faces_indexed == 2
+    assert stats2.faces_filtered == 2
+
+    await store.close()
+
+
 async def test_worker_cleanup_orphans(tmp_path: Path) -> None:
     store = FaceIndexStore(db_path=tmp_path / "face.db", dim=2)
     await store.initialize()

@@ -8,6 +8,7 @@ const THEME_COLOR_KEY = "media_portal_theme_color";
 const PAGE_SIZE_KEY = "media_portal_page_size";
 const GRID_DENSITY_KEY = "media_portal_grid_density";
 const GRID_MODE_KEY = "media_portal_grid_mode";
+const SIDEBAR_COLLAPSED_KEY = "media_portal_sidebar_collapsed";
 
 export const STAT_VISIBILITY_KEYS = ["total", "image", "video", "audio", "cat", "size"] as const;
 export type StatKey = (typeof STAT_VISIBILITY_KEYS)[number];
@@ -179,6 +180,11 @@ function loadGridMode(): GridMode {
   return (GRID_MODE_KEYS as string[]).includes(raw) ? (raw as GridMode) : "card";
 }
 
+function loadSidebarCollapsed(): boolean {
+  const raw = safeGet<unknown>(SIDEBAR_COLLAPSED_KEY, false);
+  return raw === true;
+}
+
 function hexToRgbTriplet(input: string): string {
   const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(input.trim());
   if (!m) return "99, 102, 241";
@@ -200,6 +206,7 @@ export const useUiStore = defineStore("ui", {
   state: () => ({
     theme: getInitialTheme(),
     sidebarOpen: false,
+    sidebarCollapsed: loadSidebarCollapsed(),
     statVisibility: loadStatVisibility(),
     themeColor: loadThemeColor() as ThemeColor,
     pageSize: loadPageSize() as PageSize,
@@ -286,6 +293,17 @@ export const useUiStore = defineStore("ui", {
     },
     setSidebarOpen(open: boolean) {
       this.sidebarOpen = open;
+    },
+    setSidebarCollapsed(collapsed: boolean) {
+      this.sidebarCollapsed = !!collapsed;
+      safeSet(SIDEBAR_COLLAPSED_KEY, this.sidebarCollapsed);
+    },
+    toggleSidebar() {
+      if (this.isPcHoverDevice()) {
+        this.setSidebarCollapsed(!this.sidebarCollapsed);
+      } else {
+        this.setSidebarOpen(!this.sidebarOpen);
+      }
     },
     isPcHoverDevice(): boolean {
       try {

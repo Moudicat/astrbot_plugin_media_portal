@@ -9,6 +9,12 @@ export type ModelStatus =
   | "cancelled"
   | "corrupted";
 
+export type ModelPhase =
+  | ""
+  | "checking_deps"
+  | "installing_deps"
+  | "downloading_files";
+
 export interface ModelSnapshot {
   key: string;
   capability: "clip" | "face";
@@ -17,6 +23,7 @@ export interface ModelSnapshot {
   homepage: string;
   license: string;
   status: ModelStatus;
+  phase: ModelPhase;
   files_total: number;
   files_complete: number;
   bytes_total: number | null;
@@ -29,6 +36,16 @@ export interface ModelSnapshot {
   files_done: number;
   last_event_at: number;
   target_dir: string;
+  deps_total: number;
+  deps_installed: number;
+  deps_pending: string[];
+  missing_deps: string[];
+}
+
+export interface FaceQualityThresholds {
+  min_det_score: number;
+  min_face_size: number;
+  min_blur_var: number;
 }
 
 export interface IntelligenceListResp {
@@ -36,6 +53,7 @@ export interface IntelligenceListResp {
   clip_enabled: boolean;
   face_enabled: boolean;
   hf_mirror_url: string;
+  face_quality?: FaceQualityThresholds;
   models: ModelSnapshot[];
 }
 
@@ -80,11 +98,19 @@ export interface FaceStatusResp {
   stats: {
     media_processed?: number;
     faces_indexed?: number;
+    faces_filtered?: number;
     skipped?: number;
     failed?: number;
     last_run_at?: number;
     last_error?: string;
   };
+  thresholds?: FaceQualityThresholds;
+}
+
+export interface FacePruneResp {
+  removed: number;
+  removed_ids: number[];
+  thresholds: FaceQualityThresholds;
 }
 
 export interface FacePerson {
@@ -157,12 +183,16 @@ export const intelligenceApi = {
     face_enabled?: boolean;
     hf_mirror_url?: string;
     max_concurrent_downloads?: number;
+    face_min_det_score?: number;
+    face_min_face_size?: number;
+    face_min_blur_var?: number;
   }) =>
     request<{
       feature_enabled: boolean;
       clip_enabled: boolean;
       face_enabled: boolean;
       hf_mirror_url: string;
+      face_quality?: FaceQualityThresholds;
     }>("/api/intelligence/settings", { method: "PATCH", body: payload }),
   clipStatus: () => request<ClipStatusResp>("/api/intelligence/clip/status"),
   clipScan: () =>
@@ -230,4 +260,14 @@ export const intelligenceApi = {
       "/api/intelligence/face/thumbs/rebuild",
       { method: "POST" },
     ),
+  facePrune: (payload?: {
+    min_det_score?: number;
+    min_face_size?: number;
+    min_blur_var?: number;
+    ignore_blur_var_zero?: boolean;
+  }) =>
+    request<FacePruneResp>("/api/intelligence/face/prune", {
+      method: "POST",
+      body: payload ?? {},
+    }),
 };

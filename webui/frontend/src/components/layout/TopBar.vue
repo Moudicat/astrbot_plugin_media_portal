@@ -2,11 +2,19 @@
   <header class="topbar" :class="{ 'has-pinned': selectedCount > 0 }">
     <div class="topbar-left">
       <button
-        class="icon mobile-only"
-        :title="$t('topbar.menu')"
+        class="icon topbar-sidebar-toggle"
+        :title="
+          sidebarVisible
+            ? $t('topbar.collapseSidebar')
+            : $t('topbar.expandSidebar')
+        "
+        :aria-pressed="sidebarVisible ? 'true' : 'false'"
         @click="$emit('toggle-sidebar')"
       >
-        <Icon name="menu" :size="16" />
+        <Icon
+          :name="sidebarVisible ? 'panel-left-close' : 'panel-left-open'"
+          :size="16"
+        />
       </button>
       <div class="brand">
         <div class="brand-logo brand-logo-img">
@@ -24,6 +32,7 @@
       <div id="topbar-pinned-slot" class="topbar-pinned-slot"></div>
     </div>
     <div class="topbar-actions">
+      <ProgressHub class="topbar-progress-hub" />
       <button
         class="icon"
         :title="theme === 'dark' ? $t('topbar.themeDark') : $t('topbar.themeLight')"
@@ -33,6 +42,13 @@
       </button>
       <button class="icon" :title="$t('topbar.refresh')" @click="$emit('refresh')">
         <Icon name="refresh-cw" :size="16" />
+      </button>
+      <button
+        class="icon topbar-intelligence-toggle"
+        :title="$t('topbar.intelligence')"
+        @click="$emit('intelligence')"
+      >
+        <Icon name="brain-circuit" :size="16" />
       </button>
       <button class="icon" :title="$t('topbar.settings')" @click="$emit('settings')">
         <Icon name="settings" :size="16" />
@@ -47,12 +63,18 @@
 
 <script setup lang="ts">
 import Icon from "@/components/common/Icon.vue";
+import ProgressHub from "@/components/layout/ProgressHub.vue";
 
 interface Props {
   theme?: string;
   selectedCount?: number;
+  sidebarVisible?: boolean;
 }
-withDefaults(defineProps<Props>(), { theme: "dark", selectedCount: 0 });
+withDefaults(defineProps<Props>(), {
+  theme: "dark",
+  selectedCount: 0,
+  sidebarVisible: true,
+});
 
 const logoUrl = `${import.meta.env.BASE_URL}logo.svg`;
 
@@ -60,7 +82,14 @@ defineEmits<{
   (e: "toggle-sidebar"): void;
   (e: "toggle-theme"): void;
   (e: "refresh"): void;
+  (e: "intelligence"): void;
   (e: "settings"): void;
   (e: "logout"): void;
 }>();
 </script>
+
+<style scoped>
+.topbar-progress-hub {
+  margin-right: 4px;
+}
+</style>

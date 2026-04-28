@@ -12,7 +12,15 @@
 
 from .config_state import ModelStatus
 from .downloader import DownloadEvent, ModelDownloader
-from .manager import IntelligenceManager, ModelSnapshot
+from .manager import (
+    DOWNLOAD_PHASE_CHECKING_DEPS,
+    DOWNLOAD_PHASE_DOWNLOADING_FILES,
+    DOWNLOAD_PHASE_IDLE,
+    DOWNLOAD_PHASE_INSTALLING_DEPS,
+    DependencyInstaller,
+    IntelligenceManager,
+    ModelSnapshot,
+)
 from .models import ModelFile, ModelSpec
 from .registry import (
     CLIP_MODEL_KEY,
@@ -24,6 +32,11 @@ from .registry import (
 __all__ = [
     "CLIP_MODEL_KEY",
     "DEFAULT_MODELS",
+    "DOWNLOAD_PHASE_CHECKING_DEPS",
+    "DOWNLOAD_PHASE_DOWNLOADING_FILES",
+    "DOWNLOAD_PHASE_IDLE",
+    "DOWNLOAD_PHASE_INSTALLING_DEPS",
+    "DependencyInstaller",
     "DownloadEvent",
     "FACE_MODEL_KEY",
     "IntelligenceManager",

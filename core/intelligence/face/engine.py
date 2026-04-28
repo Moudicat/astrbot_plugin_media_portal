@@ -40,6 +40,9 @@ class FaceDetection:
     embedding: list[float] = field(default_factory=list)
     """L2 归一化后的 512 维 ArcFace 嵌入。"""
 
+    blur_var: float = 0.0
+    """112×112 对齐人脸的 Laplacian 方差，越大越清晰。0 表示未计算或失败。"""
+
 
 _DETECTOR_FILENAME = "det_500m.onnx"
 _RECOGNITION_FILENAME = "w600k_mbf.onnx"
@@ -164,12 +167,24 @@ class FaceEngine:
                 kps_list = [(float(p[0]), float(p[1])) for p in kps_arr]
 
             embedding: list[float] = []
+            blur_var = 0.0
             if kps_arr is not None:
                 try:
-                    feat = rec_model.get_feat(_align_face(bgr, kps_arr))
-                    embedding = _l2_normalize(np.asarray(feat).reshape(-1))
+                    aligned = _align_face(bgr, kps_arr)
                 except Exception as exc:  # pragma: no cover
-                    logger.warning("人脸嵌入计算失败: %s", exc)
+                    logger.warning("人脸对齐失败: %s", exc)
+                    aligned = None
+                if aligned is not None:
+                    try:
+                        feat = rec_model.get_feat(aligned)
+                        embedding = _l2_normalize(np.asarray(feat).reshape(-1))
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("人脸嵌入计算失败: %s", exc)
+                    try:
+                        blur_var = _laplacian_variance(aligned)
+                    except Exception as exc:  # pragma: no cover
+                        logger.debug("人脸清晰度估计失败: %s", exc)
+                        blur_var = 0.0
 
             results.append(
                 FaceDetection(
@@ -177,6 +192,7 @@ class FaceEngine:
                     kps=kps_list,
                     det_score=score,
                     embedding=embedding,
+                    blur_var=blur_var,
                 )
             )
         return results
@@ -229,3 +245,57 @@ def _l2_normalize(vec: Any) -> list[float]:
     if norm > 0:
         arr = arr / norm
     return arr.astype(np.float32).tolist()
+
+
+def _laplacian_variance(aligned_bgr: Any) -> float:
+    """对 112×112 对齐人脸做 Laplacian 方差，作为清晰度指标。
+
+    优先使用 ``cv2``（C 实现，~毫秒级），缺失时退回 numpy 手工实现的 3x3 离散
+    Laplacian 卷积，仍能给出可比的相对值。
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover
+        return 0.0
+
+    arr = np.asarray(aligned_bgr)
+    if arr.size == 0:
+        return 0.0
+
+    if arr.ndim == 3:
+        try:
+            import cv2  # type: ignore
+        except ImportError:  # pragma: no cover - insightface 自带 cv2
+            cv2 = None
+        if cv2 is not None:
+            gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+        else:
+            r = arr[:, :, 2].astype(np.float32)
+            g = arr[:, :, 1].astype(np.float32)
+            b = arr[:, :, 0].astype(np.float32)
+            gray = (0.299 * r + 0.587 * g + 0.114 * b)
+    else:
+        gray = arr
+
+    gray = gray.astype(np.float32)
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:  # pragma: no cover
+        cv2 = None
+
+    if cv2 is not None:
+        lap = cv2.Laplacian(gray, cv2.CV_32F)
+    else:  # pragma: no cover - 兜底实现，便于无 OpenCV 的最小环境
+        if gray.shape[0] < 3 or gray.shape[1] < 3:
+            return 0.0
+        center = gray[1:-1, 1:-1]
+        lap = (
+            gray[:-2, 1:-1]
+            + gray[2:, 1:-1]
+            + gray[1:-1, :-2]
+            + gray[1:-1, 2:]
+            - 4.0 * center
+        )
+
+    return float(lap.var())

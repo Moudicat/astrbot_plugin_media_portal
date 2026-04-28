@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import mimetypes
 import secrets
 import shutil
@@ -16,6 +17,14 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+# CLIP 检索结果的最低展示阈值。
+#
+# 业界经验：OpenCLIP / CN-CLIP / OpenAI CLIP ViT-B 系列在 cosine 归一化后的
+# 「弱相关」阈值大约落在 0.22 附近，低于该值基本是噪声。这里默认裁掉「仅供参考」
+# 档（< 0.22）以及任何非有限值（NaN / Inf，多见于早期写入的坏向量），
+# 这样前端就不会再展示明显不相关的图片，但仍允许较弱的相关结果（≥0.22）出现。
+_CLIP_SCORE_MIN_DISPLAY = 0.22
 
 import aiofiles
 import uvicorn
@@ -1952,6 +1961,7 @@ class WebUIServer:
                 "clip_enabled": manager.clip_enabled,
                 "face_enabled": manager.face_enabled,
                 "hf_mirror_url": manager.hf_mirror_url,
+                "face_quality": manager.face_quality_thresholds,
                 "models": [snap.to_dict() for snap in manager.snapshots()],
             }
 
@@ -2013,12 +2023,16 @@ class WebUIServer:
                 face_enabled=payload.get("face_enabled"),
                 hf_mirror_url=payload.get("hf_mirror_url"),
                 max_concurrent_downloads=payload.get("max_concurrent_downloads"),
+                face_min_det_score=payload.get("face_min_det_score"),
+                face_min_face_size=payload.get("face_min_face_size"),
+                face_min_blur_var=payload.get("face_min_blur_var"),
             )
             return {
                 "feature_enabled": manager.feature_enabled,
                 "clip_enabled": manager.clip_enabled,
                 "face_enabled": manager.face_enabled,
                 "hf_mirror_url": manager.hf_mirror_url,
+                "face_quality": manager.face_quality_thresholds,
             }
 
         # ---- CLIP 索引与语义搜索 ----
@@ -2084,6 +2098,10 @@ class WebUIServer:
             pairs = await manager.search_clip_by_text(text, top_k=limit)
             results: list[dict[str, Any]] = []
             for media_id, score in pairs:
+                if not math.isfinite(score) or score < _CLIP_SCORE_MIN_DISPLAY:
+                    # 「仅供参考」档（含坏向量产生的 NaN）一律不返回，
+                    # 避免前端列表里出现明显不相关的结果。
+                    continue
                 getter = getattr(self.media_manager, "get_by_id", None)
                 if not callable(getter):
                     continue
@@ -2097,6 +2115,7 @@ class WebUIServer:
                 "results": results,
                 "engine_ready": True,
                 "query": text,
+                "min_score": _CLIP_SCORE_MIN_DISPLAY,
             }
 
         @self._app.delete("/api/intelligence/clip/index/{media_id}")
@@ -2181,6 +2200,7 @@ class WebUIServer:
                 stats_payload = {
                     "media_processed": stats.media_processed,
                     "faces_indexed": stats.faces_indexed,
+                    "faces_filtered": getattr(stats, "faces_filtered", 0),
                     "skipped": stats.skipped,
                     "failed": stats.failed,
                     "last_run_at": stats.last_run_at,
@@ -2192,6 +2212,7 @@ class WebUIServer:
                 "person_count": person_count,
                 "scanning": scanning,
                 "stats": stats_payload,
+                "thresholds": manager.face_quality_thresholds,
             }
 
         @self._app.post("/api/intelligence/face/scan")
@@ -2360,6 +2381,30 @@ class WebUIServer:
             valid = await _list_valid_media_ids()
             removed = await manager.cleanup_face_orphans(valid)
             return {"removed": int(removed)}
+
+        @self._app.post("/api/intelligence/face/prune")
+        async def intel_face_prune(
+            payload: dict[str, Any] | None = None,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            """按当前阈值（或 payload 显式指定）清理已有低质量人脸。"""
+            _ = token
+            manager = _require_intelligence()
+            payload = payload or {}
+            result = await manager.prune_low_quality_faces(
+                min_det_score=payload.get("min_det_score"),
+                min_face_size=payload.get("min_face_size"),
+                min_blur_var=payload.get("min_blur_var"),
+                ignore_blur_var_zero=bool(
+                    payload.get("ignore_blur_var_zero", True)
+                ),
+            )
+            removed_ids = list(result.get("removed", []))
+            return {
+                "removed": len(removed_ids),
+                "removed_ids": removed_ids,
+                "thresholds": result.get("thresholds", {}),
+            }
 
         @self._app.post("/api/intelligence/face/thumbs/rebuild")
         async def intel_face_thumbs_rebuild(
