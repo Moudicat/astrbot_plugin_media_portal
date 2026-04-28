@@ -87,20 +87,20 @@
   <tbody>
     <tr valign="top">
       <td align="center">
-        <img width="100%" alt="CLIP 语义检索" src="https://github.com/user-attachments/assets/49c94fb6-94aa-435f-a375-c2c9148aca58" />
+        <img width="100%" alt="CLIP 语义检索" src="https://github.com/user-attachments/assets/d798d249-51ea-4c36-8e2b-365c0327a4dd" />
         <br /><br />
-        用自然语言描述图片内容，例如“海边日落”，即可在媒体库中查找相似图片。
+        用自然语言描述图片内容，例如“海边”，即可在媒体库中查找相似图片
       </td>
       <td align="center">
-        <img width="100%" alt="人脸识别自动聚合" src="https://github.com/user-attachments/assets/8cbf09d2-838c-4f0c-b242-3cd27e2cb3c2" />
+        <img width="100%" alt="人脸识别自动聚合" src="https://github.com/user-attachments/assets/bfdae576-ffea-4a07-9e9f-d03d352ea93b" />
         <br /><br />
-        自动识别人脸并按人物聚合，方便查看、命名、合并和整理人物图库。
+        自动识别人脸并按人物聚合，方便查看、命名、合并和整理人物图库
       </td>
     </tr>
   </tbody>
 </table>
 
-> CLIP 语义检索和人脸识别都使用本地模型运行，不会把媒体上传到云端；相关能力为可选功能，需要在 WebUI「设置 → 本地模型管理」中手动下载并开启。
+> CLIP 语义检索和人脸识别都使用本地模型运行，不会把媒体上传到云端；相关能力为可选功能，需要在 WebUI「本地模型管理」中手动下载并开启。
 
 ## 📦 安装方式
 
