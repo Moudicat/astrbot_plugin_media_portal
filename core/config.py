@@ -47,6 +47,27 @@ def _as_int(value: Any, default: int, minimum: int | None = None) -> int:
     return parsed
 
 
+def _as_float(
+    value: Any,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    """把任意输入解析为浮点数；解析失败时回退默认值。"""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        if value is not None and str(value).strip() != "":
+            logger.warning("浮点配置值无效: %r，已回退默认值 %s。", value, default)
+        parsed = default
+    if minimum is not None and parsed < minimum:
+        return minimum
+    if maximum is not None and parsed > maximum:
+        return maximum
+    return parsed
+
+
 def _as_str(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -140,6 +161,9 @@ class WebUISettings:
     readonly_token_ttl: int = 3600
     share_url_ttl: int = 3600
     data_token_ttl: int = 3600
+    totp_enabled: bool = False
+    totp_issuer: str = "Media Portal"
+    totp_account: str = "admin"
 
 
 @dataclass(slots=True)
@@ -165,10 +189,28 @@ class DownloaderSettings:
 
 
 @dataclass(slots=True)
+class IntelligenceSettings:
+    enabled: bool = False
+    hf_mirror_url: str = ""
+    clip_enabled: bool = False
+    face_enabled: bool = False
+    max_concurrent_downloads: int = 1
+    face_min_det_score: float = 0.6
+    """人脸检测置信度下限（SCRFD 0~1）。"""
+
+    face_min_face_size: int = 60
+    """人脸框最短边像素下限，过滤远景小脸。"""
+
+    face_min_blur_var: float = 60.0
+    """112×112 对齐人脸的拉普拉斯方差下限，过滤糊脸。0 表示不过滤。"""
+
+
+@dataclass(slots=True)
 class PluginSettings:
     webui: WebUISettings
     storage: StorageSettings
     downloader: DownloaderSettings
+    intelligence: IntelligenceSettings
     astrbot_data_dir: Path
     plugin_data_dir: Path
     media_root: Path
@@ -215,6 +257,7 @@ def load_plugin_settings(
     webui_raw = _read_section(raw_config, "webui")
     storage_raw = _read_section(raw_config, "storage")
     downloader_raw = _read_section(raw_config, "downloader")
+    intelligence_raw = _read_section(raw_config, "intelligence")
 
     # 兼容旧平铺配置
     if not webui_raw and "webui_port" in raw_config:
@@ -237,6 +280,9 @@ def load_plugin_settings(
         ),
         share_url_ttl=_as_int(webui_raw.get("share_url_ttl"), 3600, minimum=60),
         data_token_ttl=_as_int(webui_raw.get("data_token_ttl"), 3600, minimum=60),
+        totp_enabled=_as_bool(webui_raw.get("totp_enabled"), False),
+        totp_issuer=_as_str(webui_raw.get("totp_issuer"), "Media Portal") or "Media Portal",
+        totp_account=_as_str(webui_raw.get("totp_account"), "admin") or "admin",
     )
     storage = StorageSettings(
         location_mode=(
@@ -257,6 +303,30 @@ def load_plugin_settings(
             downloader_raw.get("allow_local_path_source"), True
         ),
         local_path_whitelist=local_path_whitelist,
+    )
+    intelligence = IntelligenceSettings(
+        enabled=_as_bool(intelligence_raw.get("enabled"), False),
+        hf_mirror_url=_normalize_base_url(
+            _as_str(intelligence_raw.get("hf_mirror_url"), "")
+        ),
+        clip_enabled=_as_bool(intelligence_raw.get("clip_enabled"), False),
+        face_enabled=_as_bool(intelligence_raw.get("face_enabled"), False),
+        max_concurrent_downloads=max(
+            1,
+            min(3, _as_int(intelligence_raw.get("max_concurrent_downloads"), 1, minimum=1)),
+        ),
+        face_min_det_score=_as_float(
+            intelligence_raw.get("face_min_det_score"),
+            0.6,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        face_min_face_size=_as_int(
+            intelligence_raw.get("face_min_face_size"), 60, minimum=0
+        ),
+        face_min_blur_var=_as_float(
+            intelligence_raw.get("face_min_blur_var"), 60.0, minimum=0.0
+        ),
     )
 
     astrbot_data_dir = Path(get_astrbot_data_path()).resolve()
@@ -286,6 +356,7 @@ def load_plugin_settings(
         webui=webui,
         storage=storage,
         downloader=downloader,
+        intelligence=intelligence,
         astrbot_data_dir=astrbot_data_dir,
         plugin_data_dir=plugin_data_dir,
         media_root=media_root,

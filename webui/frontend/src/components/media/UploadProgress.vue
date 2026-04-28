@@ -1,7 +1,7 @@
 <template>
   <div
     v-if="hasJobs"
-    class="upload-progress"
+    class="upload-progress mobile-only-flex"
     :class="{ expanded, hover: hovering, 'has-error': failed.length }"
     @mouseenter="hovering = true"
     @mouseleave="hovering = false"
@@ -164,3 +164,16 @@ function formatBytes(bytes: number) {
   return formatSize(bytes);
 }
 </script>
+
+<style scoped>
+/* 仅在窄屏 / 触摸设备上展示底部上传浮窗，桌面端由 ProgressHub 接管 */
+.upload-progress.mobile-only-flex {
+  display: none;
+}
+
+@media (hover: none), (max-width: 720px) {
+  .upload-progress.mobile-only-flex {
+    display: block;
+  }
+}
+</style>

@@ -27,6 +27,7 @@
   - [🧰 命令列表](#-命令列表)
   - [⚙️ 配置说明](#️-配置说明)
   - [🖥️ WebUI 说明](#️-webui-说明)
+  - [🧠 智能能力（可选）](#-智能能力可选)
   - [❓ 常见问题](#-常见问题)
   - [🔒 安全建议](#-安全建议)
   - [🧪 独立调试 WebUI](#-独立调试-webui)
@@ -44,6 +45,8 @@
 | 📱 响应式 | 同时适配 PC 与移动端 |
 | 🔍 Data 资源浏览 | 只读浏览 AstrBot `/data` 目录，支持图片/视频/音频预览 |
 | 🔐 安全控制 | 登录限流、媒体只读 token、路径越界防护、体积限制 |
+| 🛡️ 双因素登录（可选） | TOTP / Google Authenticator 兼容，支持恢复代码与一键启停 |
+| 🧠 智能能力（可选） | 本地 ONNX CLIP 语义检索 + InsightFace 人脸检测；模型在后台管理面板按需下载、可启停 |
 
 ## 🖼️ 截图
 
@@ -118,6 +121,17 @@ pip install -r requirements.txt
 - `update_media(media_id, category, description, tags)`  
   统一更新媒体的分类 / 描述 / 标签，留空字段即不修改；`tags` 传 `"-"` 表示清空标签。
 
+### 智能能力（按需开启）
+
+> 仅在已下载对应模型并启用功能后注册到 LLM；详见下文 [🧠 智能能力（可选）](#-智能能力可选)。
+
+- `search_media_semantic(query, limit, category)`  
+  本地 CLIP 语义检索，按自然语言搜索媒体库（仅在 CLIP 模型就绪时可用）。
+- `list_face_persons(limit)`  
+  列出已识别的人物聚类（含 ID、名称、人脸数）。
+- `find_media_with_person(person, limit)`  
+  按人物 ID 或名称返回该人物出现过的媒体列表。
+
 ## 🧰 命令列表
 
 命令组：`/media`
@@ -151,6 +165,16 @@ pip install -r requirements.txt
 - `readonly_token_ttl`：WebUI 媒体预览 token 有效期（秒）；
 - `share_url_ttl`：`get_media_url` / 复制链接生成 token 的有效期（秒）；
 - `data_token_ttl`：Data 文件直链 token 有效期（秒）。
+- `totp_enabled`：是否允许在「设置 → 账号安全」中开启 TOTP 双因素登录（默认 `false`）。
+- `totp_issuer` / `totp_account`：写入二维码 / `otpauth://` URI 的发行方与账号名，用于在 Authenticator 应用中识别本实例。
+
+### `intelligence`
+
+- `enabled`：智能能力总开关；关闭时 CLIP / 人脸均不会加载，所有相关 API 与 LLM 工具均不暴露；
+- `hf_mirror_url`：HuggingFace 镜像（如 `https://hf-mirror.com`），留空走官方源；
+- `clip_enabled`：是否启用 CLIP 语义检索（需要 `requirements-clip.txt` 与已下载的 CLIP 模型）；
+- `face_enabled`：是否启用人脸检测/识别（需要 `requirements-face.txt` 与已下载的 InsightFace 模型）；
+- `max_concurrent_downloads`：模型并发下载数（默认 1，最大 3）。
 
 ### `storage`
 
@@ -192,6 +216,77 @@ SQLite 中保存的是相对媒体根目录的路径，**切换模式本身不�
 - 媒体流使用带签名、带过期时间的只读 token；
 - Data 文件访问使用独立 token（与媒体 token 分离）。
 
+## 🧠 智能能力（可选）
+
+智能能力套件全部基于本地 ONNX Runtime 推理，不向外部任何模型服务发送数据。开启后：
+
+| 能力 | 模型 | 说明 |
+| --- | --- | --- |
+| **CLIP 语义检索** | `Xenova/chinese-clip-vit-base-patch16` (ONNX) | 把媒体库中的图片编码为 512 维向量，支持中/英自然语言查询；命中后按余弦相似度排序。 |
+| **人脸检测 + 识别** | `InsightFace buffalo_s` (ONNX) | RetinaFace 检测 + ArcFace 512 维嵌入，自动按相似度聚类成「人物」，支持改名、合并、拆分。 |
+
+### 1️⃣ 总开关与依赖
+
+1. 先在 `_conf_schema.json` / AstrBot 配置中将 `intelligence.enabled` 打开，并按需开启 `clip_enabled` / `face_enabled`；
+2. 安装可选依赖（按需）：
+
+```bash
+# CLIP 语义检索（onnxruntime + tokenizers + Pillow + numpy）
+pip install -r requirements-clip.txt
+
+# 人脸检测 / 识别（insightface + scikit-learn + opencv-python-headless 等）
+pip install -r requirements-face.txt
+```
+
+3. 国内网络受限时可在配置中填写 `intelligence.hf_mirror_url`（例如 `https://hf-mirror.com`），下载器会自动重写所有 `huggingface.co` 链接。
+
+### 2️⃣ 后台下载 / 启停模型
+
+在 WebUI「设置 → 智能能力」面板可看到：
+
+- **CLIP / Face 模型卡**：显示状态（未下载 / 下载中 / 就绪 / 校验失败），可单击触发下载、断点续传或删除；
+- **进度条**：实时显示每个模型文件的字节进度与 SHA256 校验情况；
+- **启用开关**：在依赖与模型都就绪后才能勾上，开启后立即生效；
+- **后台索引**：启用后台异步扫描存量媒体，建立 CLIP 向量索引、人脸索引与缩略图，支持中途停止与全量重建。
+
+模型与索引文件落在：
+
+```
+data/plugin_data/astrbot_plugin_media_portal/
+├── intelligence/
+│   ├── models/                # 下载好的 ONNX / tokenizer 等
+│   ├── clip_index.db          # CLIP 向量索引
+│   └── face_index.db          # 人脸 / 人物 / 缩略图记录
+└── ...
+```
+
+### 3️⃣ 人脸聚类页面
+
+WebUI 左侧菜单「人脸」入口（仅在 `face_enabled=true` 时显示）：
+
+- **概览**：总人脸数、已聚类人物数、未识别人脸数、最近一次扫描状态；
+- **人物卡片**：按代表性缩略图展示，可一键改名、查看所有人脸、删除人物；
+- **批量合并**：勾选 2 个以上人物后，一键合并到目标人物；
+- **拆分**：进入人物详情，挑选若干人脸后「拆分为新人物」；
+- **重新聚类**：当新增大量媒体或调整阈值后，可手动触发全量 DBSCAN 重聚类。
+
+### 4️⃣ LLM 工具暴露
+
+下表中的工具仅在对应能力启用且模型就绪时**自动注册**到 LLM；未启用时完全不会出现，避免 Agent 误调用。
+
+| 工具 | 说明 |
+| --- | --- |
+| `search_media_semantic` | 自然语言语义检索（基于 CLIP） |
+| `list_face_persons` | 列出聚类得到的人物 |
+| `find_media_with_person` | 按人物 ID/名称查找包含该人物的媒体 |
+
+### 5️⃣ 隐私 & 资源说明
+
+- 所有图像、向量、人脸缩略图都仅落本地，不会发送到外部服务；
+- 后台索引采用低优先级队列，可随时在面板停止；
+- 推理走 CPU ONNX Runtime，单张图编码毫秒级；如需 GPU，可自行替换 `onnxruntime-gpu`；
+- 关闭对应能力后，索引文件**保留**以便下次重启复用；如需清理可手动删除上述目录。
+
 ## ❓ 常见问题
 
 ### Q1：`get_media_url` 返回的地址为什么不是本机 IP？
@@ -220,7 +315,17 @@ A：那是容器（Docker / K8s）内部网桥地址，宿主机/外网本来就
 1. 生产环境务必设置固定强密码，不要长期使用随机密码；
 2. 若开放公网访问，请配合反向代理与 HTTPS；
 3. 分享链接已带过期时间，但仍建议最小化转发范围并定期轮换密码；
-4. 建议限制上传/下载来源并定期清理历史媒体。
+4. 建议限制上传/下载来源并定期清理历史媒体；
+5. 公网或多用户场景**强烈建议启用 TOTP 双因素登录**（见下文）。
+
+### 🛡️ 启用 TOTP 双因素登录（可选）
+
+1. 在 AstrBot 配置中启用 `webui.totp_enabled = true`（可同时设置 `totp_issuer` / `totp_account`），重载插件；
+2. 用密码登录 WebUI → 顶栏「设置」 → **账号安全 · TOTP**；
+3. 点「启用 TOTP」，使用 Google Authenticator / 1Password / Bitwarden 等扫描二维码，输入 6 位验证码完成绑定；
+4. 系统会一次性显示 8 个**恢复代码**，请立即复制或下载（每个仅可使用一次，离开页面后无法再次查看）；
+5. 之后登录会先校验密码，再要求输入 6 位动态码或恢复代码，方可签发会话；
+6. TOTP 密钥与恢复码哈希仅落在 `data/plugin_data/.../.totp_state`（权限 0600），**不会写入 SQLite，也不会包含在备份归档中**。
 
 ## 🧪 独立调试 WebUI
 
@@ -260,6 +365,8 @@ python scripts/debug_webui.py --reload
 | `--session-timeout` | 登录会话秒数（默认 86400，调试期偏长） |
 | `--allowed-origins` | CORS 白名单（逗号分隔） |
 | `--reload` | 启用 Python 代码热重载（依赖 watchfiles） |
+| `--totp` / `--no-totp` | 是否在调试 WebUI 中启用 TOTP（**默认开启**，可在「设置 → 账号安全」中扫码绑定） |
+| `--totp-issuer` / `--totp-account` | TOTP `otpauth://` URI 中显示的发行方与账号名 |
 
 ## 📚 开发参考
 

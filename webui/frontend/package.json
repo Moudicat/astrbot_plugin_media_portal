@@ -1,6 +1,6 @@
 {
   "name": "astrbot-media-portal-webui",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "description": "Media Portal WebUI — Vite + Vue 3 + TypeScript + Pinia + vue-router + vue-i18n (Bun powered)",

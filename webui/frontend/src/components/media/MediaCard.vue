@@ -41,6 +41,16 @@
           <Icon name="clock" :size="11" />
           {{ durationLabel }}
         </span>
+        <span
+          v-if="scoreInfo"
+          class="preview-score"
+          :class="`tier-${scoreInfo.tier}`"
+          :title="scoreInfo.tooltip"
+        >
+          <Icon :name="scoreInfo.icon" :size="11" />
+          <span class="tier-label">{{ scoreInfo.tierLabel }}</span>
+          <span class="tier-pct">{{ scoreInfo.percent }}</span>
+        </span>
         <div class="preview-actions" @click.stop>
           <button class="icon sm" :title="$t('card.copyLink')" @click="$emit('copy-link', item.id)">
             <Icon name="link-2" :size="14" />
@@ -172,6 +182,37 @@ const durationLabel = computed(() => {
   if (props.item.kind !== "audio" && props.item.kind !== "video") return "";
   return formatDuration(props.item.duration);
 });
+type ScoreTier = "strong" | "moderate" | "reference";
+
+const SCORE_THRESHOLDS = { strong: 0.3, moderate: 0.22 } as const;
+
+interface ScoreInfo {
+  tier: ScoreTier;
+  tierLabel: string;
+  percent: string;
+  icon: string;
+  tooltip: string;
+}
+
+const scoreInfo = computed<ScoreInfo | null>(() => {
+  const raw = props.item.score;
+  if (raw === undefined) return null;
+  const finite = typeof raw === "number" && Number.isFinite(raw);
+  const safe = finite ? Math.max(0, Math.min(1, raw as number)) : 0;
+  let tier: ScoreTier;
+  if (finite && safe >= SCORE_THRESHOLDS.strong) tier = "strong";
+  else if (finite && safe >= SCORE_THRESHOLDS.moderate) tier = "moderate";
+  else tier = "reference";
+  const pct = Math.round(safe * 100);
+  const display = finite ? `${pct}%` : "—";
+  return {
+    tier,
+    tierLabel: t(`card.scoreTier.${tier}`),
+    percent: display,
+    icon: tier === "strong" ? "sparkles" : tier === "moderate" ? "cpu" : "info",
+    tooltip: t(`card.scoreTooltip.${tier}`, { value: display }),
+  };
+});
 
 function handleImgError() {
   if (!imageError.value) imageError.value = true;
@@ -193,5 +234,47 @@ function onNameClick() {
 }
 .meta-name-clickable:hover {
   color: var(--primary);
+}
+.preview-score {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.preview-score :deep(svg) {
+  flex: none;
+}
+.preview-score .tier-label {
+  font-weight: 700;
+}
+.preview-score .tier-pct {
+  opacity: 0.95;
+}
+.preview-score.tier-strong {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+}
+.preview-score.tier-moderate {
+  background: rgba(14, 165, 233, 0.92);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.28);
+}
+.preview-score.tier-reference {
+  background: rgba(71, 85, 105, 0.85);
+  color: #f8fafc;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.25);
+}
+html[data-theme="dark"] .preview-score.tier-reference {
+  background: rgba(30, 41, 59, 0.88);
+  color: #cbd5e1;
 }
 </style>

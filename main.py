@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover
     astrbot_config = None
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
+from .core.intelligence import IntelligenceManager, attach_auto_scan_post_save
 from .core.utils import (
     format_duration,
     format_size,
@@ -28,11 +29,45 @@ from .core.utils import (
 from .webui import WebUIServer
 
 
+class _AstrbotDependencyInstaller:
+    """把 AstrBot 内置的 ``pip_installer`` 适配成 :class:`DependencyInstaller` 协议。
+
+    - :meth:`find_missing` 优先尝试 ``find_missing_requirements_from_lines``，缺失时退化为
+      把所有声明视为「待安装」，让上层统一交给 pip 做幂等处理。
+    - :meth:`install` 把所有规格用换行连接，一次性交给 pip，行为与
+      ``pip install -r requirements.txt`` 等价，自动遵守 AstrBot 的镜像/约束。
+    """
+
+    @staticmethod
+    def find_missing(specs: tuple[str, ...]) -> list[str]:
+        try:
+            from astrbot.core.utils.requirements_utils import (
+                find_missing_requirements_from_lines,
+            )
+        except Exception as exc:  # pragma: no cover - 兼容老版本 AstrBot
+            logger.debug("find_missing_requirements_from_lines 不可用: %s", exc)
+            return list(specs)
+        try:
+            missing = find_missing_requirements_from_lines(list(specs))
+        except Exception as exc:  # pragma: no cover - 检测器内部异常时不阻塞
+            logger.warning("依赖检测失败，将整体交给 pip 处理: %s", exc)
+            return list(specs)
+        return [str(item) for item in (missing or []) if str(item).strip()]
+
+    @staticmethod
+    async def install(specs: tuple[str, ...]) -> None:
+        if not specs:
+            return
+        from astrbot.core import pip_installer
+
+        await pip_installer.install(package_name="\n".join(specs))
+
+
 @register(
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.3.1",
+    "0.4.0",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
@@ -60,6 +95,18 @@ class MediaPortalPlugin(Star):
             allowed_kinds=self.settings.downloader.allowed_kinds,
             max_file_size_mb=self.settings.downloader.max_file_size_mb,
             default_move_local=self.settings.downloader.default_move_local,
+        )
+        self.intelligence_manager = IntelligenceManager(
+            plugin_data_dir=self.plugin_data_dir,
+            feature_enabled=self.settings.intelligence.enabled,
+            clip_enabled=self.settings.intelligence.clip_enabled,
+            face_enabled=self.settings.intelligence.face_enabled,
+            hf_mirror_url=self.settings.intelligence.hf_mirror_url,
+            max_concurrent_downloads=self.settings.intelligence.max_concurrent_downloads,
+            face_min_det_score=self.settings.intelligence.face_min_det_score,
+            face_min_face_size=self.settings.intelligence.face_min_face_size,
+            face_min_blur_var=self.settings.intelligence.face_min_blur_var,
+            dependency_installer=_AstrbotDependencyInstaller(),
         )
         self.webui_server: WebUIServer | None = None
 
@@ -107,6 +154,12 @@ class MediaPortalPlugin(Star):
                 return
             await self.media_manager.initialize()
             await self.media_manager.ensure_scanned()
+            # 把"上传/恢复后自动触发 CLIP / 人脸扫描"统一交由共享 helper 注册，
+            # 这样 ``scripts/debug_webui.py`` 单跑模式也能复用同一份逻辑。
+            attach_auto_scan_post_save(
+                media_manager=self.media_manager,
+                intelligence_manager=self.intelligence_manager,
+            )
             if self.settings.webui.enabled:
                 await self._start_webui()
             self._initialized = True
@@ -139,6 +192,9 @@ class MediaPortalPlugin(Star):
             "readonly_token_ttl": self.settings.webui.readonly_token_ttl,
             "share_url_ttl": self.settings.webui.share_url_ttl,
             "data_token_ttl": self.settings.webui.data_token_ttl,
+            "totp_enabled": self.settings.webui.totp_enabled,
+            "totp_issuer": self.settings.webui.totp_issuer,
+            "totp_account": self.settings.webui.totp_account,
         }
         self.webui_server = WebUIServer(
             media_manager=self.media_manager,
@@ -146,6 +202,7 @@ class MediaPortalPlugin(Star):
             config=config,
             data_root=self.settings.astrbot_data_dir,
             callback_api_base=callback_api_base,
+            intelligence_manager=self.intelligence_manager,
         )
         await self.webui_server.start()
 
@@ -595,6 +652,128 @@ class MediaPortalPlugin(Star):
             lines.append(f"- {text}")
         return "\n".join(lines)
 
+    @llm_tool(name="search_media_semantic")
+    async def tool_search_media_semantic(
+        self,
+        event: AstrMessageEvent,
+        query: str,
+        limit: int = 10,
+    ) -> str:
+        """语义检索图片（CLIP 语义搜索；仅在管理面板启用并下载完模型后可用）。
+
+        Args:
+            query(str): 自然语言描述，例如 "一只在草地上的橘色小猫"。
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.clip_enabled
+        ):
+            return "CLIP 语义检索未启用，请前往后台 → 设置 → 智能能力面板下载并启用 CLIP 模型。"
+        text = str(query or "").strip()
+        if not text:
+            return "请输入要检索的描述。"
+        top_k = max(1, min(50, self._parse_limit(limit, 10)))
+        pairs = await self.intelligence_manager.search_clip_by_text(text, top_k=top_k)
+        if not pairs:
+            return "没有匹配的图片，可能尚未完成索引。"
+        lines = [f"语义检索 “{text}”："]
+        for media_id, score in pairs:
+            record = await self.media_manager.get_by_id(int(media_id))
+            if record is None:
+                continue
+            lines.append(f"- score={score:.3f} {self._compact_record(record)}")
+        if len(lines) == 1:
+            return "没有匹配的图片。"
+        return "\n".join(lines)
+
+    @llm_tool(name="list_face_persons")
+    async def tool_list_face_persons(
+        self,
+        event: AstrMessageEvent,
+        limit: int = 20,
+    ) -> str:
+        """列出已识别到的人脸角色（按出现次数排序）。仅在管理面板启用人脸功能后可用。
+
+        Args:
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.face_enabled
+        ):
+            return "人脸功能未启用，请前往后台 → 设置 → 智能能力面板下载并启用人脸模型。"
+        store = await self.intelligence_manager.get_face_store()
+        if store is None:
+            return "人脸功能未启用。"
+        persons = await store.list_persons()
+        if not persons:
+            return "尚未识别到任何人脸，可在后台触发一次扫描。"
+        top = persons[: max(1, min(50, self._parse_limit(limit, 20)))]
+        lines = [f"人脸角色（共 {len(persons)} 个）："]
+        for person in top:
+            label = person.name or f"未命名#{person.id}"
+            lines.append(f"- id={person.id} 名称={label} 出现 {person.face_count} 次")
+        return "\n".join(lines)
+
+    @llm_tool(name="find_media_with_person")
+    async def tool_find_media_with_person(
+        self,
+        event: AstrMessageEvent,
+        person_id: str,
+        limit: int = 10,
+    ) -> str:
+        """根据人脸角色 id 查找包含该人物的媒体。仅在人脸功能启用后可用。
+
+        Args:
+            person_id(string): 角色 id（数字字符串）。
+            limit(int): 返回数量。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        if (
+            self.intelligence_manager is None
+            or not self.intelligence_manager.face_enabled
+        ):
+            return "人脸功能未启用，请前往后台 → 设置 → 智能能力面板下载并启用人脸模型。"
+        try:
+            pid = int(str(person_id).strip())
+        except (TypeError, ValueError):
+            return "person_id 应为数字。"
+        store = await self.intelligence_manager.get_face_store()
+        if store is None:
+            return "人脸功能未启用。"
+        person = await store.get_person(pid)
+        if person is None:
+            return f"未找到 id={pid} 的角色。"
+        top_k = max(1, min(50, self._parse_limit(limit, 10)))
+        faces = await store.list_faces_by_person(pid, limit=top_k)
+        if not faces:
+            return f"角色 {person.name or pid} 暂无关联媒体。"
+        lines = [f"角色 {person.name or pid} 出现于："]
+        seen: set[int] = set()
+        for face in faces:
+            if face.media_id in seen:
+                continue
+            seen.add(face.media_id)
+            record = await self.media_manager.get_by_id(int(face.media_id))
+            if record is None:
+                continue
+            lines.append(f"- {self._compact_record(record)}")
+        if len(lines) == 1:
+            return "暂无关联媒体。"
+        return "\n".join(lines)
+
     @llm_tool(name="search_media")
     async def tool_search_media(
         self,
@@ -830,6 +1009,10 @@ class MediaPortalPlugin(Star):
             await asyncio.gather(*pending, return_exceptions=True)
         self._background_tasks.clear()
         await self._stop_webui()
+        try:
+            await self.intelligence_manager.shutdown()
+        except Exception as exc:
+            logger.warning("关闭 IntelligenceManager 失败: %s", exc)
         try:
             await self.media_manager.close()
         except Exception as exc:

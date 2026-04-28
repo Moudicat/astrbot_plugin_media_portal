@@ -21,6 +21,8 @@ export interface MediaItem {
   name?: string;
   path?: string;
   is_dir?: boolean;
+  // CLIP 语义搜索结果中的相似度（0~1）
+  score?: number;
 }
 
 export interface MediaListResp {
@@ -77,10 +79,33 @@ export interface DataTextResp {
   encoding?: string;
 }
 
-export interface LoginResp {
+export interface LoginSessionResp {
   token: string;
+  expires_in?: number;
   readonly_token?: string;
+  readonly_expires_in?: number;
   data_token?: string;
+  data_expires_in?: number;
+  base_url?: string;
+}
+
+export interface LoginChallengeResp {
+  challenge: "totp";
+  challenge_token: string;
+  expires_in: number;
+  issuer?: string;
+  account?: string;
+}
+
+export type LoginResp = LoginSessionResp | LoginChallengeResp;
+
+export interface IntelligenceSummary {
+  feature_enabled: boolean;
+  clip_enabled: boolean;
+  face_enabled: boolean;
+  clip_ready: boolean;
+  face_ready: boolean;
+  hf_mirror_url: string;
 }
 
 export interface PortalConfig {
@@ -92,6 +117,40 @@ export interface PortalConfig {
   trash_retention_days?: number;
   readonly_token?: string;
   data_token?: string;
+  totp_feature_enabled?: boolean;
+  totp_active?: boolean;
+  intelligence?: IntelligenceSummary;
+}
+
+export interface TotpStatus {
+  feature_enabled: boolean;
+  enabled: boolean;
+  issuer: string;
+  account: string;
+  enrolled_at: number;
+  last_used_at: number;
+  remaining_recovery_codes: number;
+  pending_setup: boolean;
+}
+
+export interface TotpSetupResp {
+  secret: string;
+  otpauth_uri: string;
+  qrcode_svg: string;
+  issuer: string;
+  account: string;
+  expires_in: number;
+}
+
+export interface TotpConfirmResp {
+  enabled: boolean;
+  recovery_codes: string[];
+  remaining_recovery_codes: number;
+}
+
+export interface TotpRegenerateResp {
+  recovery_codes: string[];
+  remaining_recovery_codes: number;
 }
 
 export interface TrashItem {

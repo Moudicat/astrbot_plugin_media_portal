@@ -16,10 +16,87 @@
     </div>
 
     <div class="panel" style="display: flex; flex-direction: column; gap: 10px">
+      <div
+        v-if="canUseClipSearch"
+        class="search-mode-toggle-row"
+        role="tablist"
+        :aria-label="$t('media.searchModeLabel')"
+      >
+        <button
+          type="button"
+          class="plain mode-pill"
+          :class="{ active: searchMode === 'text' }"
+          role="tab"
+          :aria-selected="searchMode === 'text' ? 'true' : 'false'"
+          :title="$t('media.searchModeTextHint')"
+          @click="onChangeSearchMode('text')"
+        >
+          <Icon name="align-left" :size="13" />
+          <span>{{ $t("media.searchModeText") }}</span>
+        </button>
+        <button
+          type="button"
+          class="plain mode-pill"
+          :class="{ active: searchMode === 'clip' }"
+          role="tab"
+          :aria-selected="searchMode === 'clip' ? 'true' : 'false'"
+          :disabled="!clipReady"
+          :title="
+            clipReady
+              ? $t('media.searchModeClipHint')
+              : $t('media.searchModeClipUnavailable')
+          "
+          @click="onChangeSearchMode('clip')"
+        >
+          <Icon name="cpu" :size="13" />
+          <span>{{ $t("media.searchModeClip") }}</span>
+        </button>
+      </div>
       <div class="toolbar">
-        <div class="toolbar-search">
+        <div class="toolbar-search" :class="{ 'is-clip': searchMode === 'clip' }">
+          <div
+            v-if="canUseClipSearch"
+            class="search-mode-toggle hide-on-mobile"
+            role="tablist"
+            :aria-label="$t('media.searchModeLabel')"
+          >
+            <button
+              type="button"
+              class="plain mode-pill"
+              :class="{ active: searchMode === 'text' }"
+              role="tab"
+              :aria-selected="searchMode === 'text' ? 'true' : 'false'"
+              :title="$t('media.searchModeTextHint')"
+              @click="onChangeSearchMode('text')"
+            >
+              <Icon name="align-left" :size="13" />
+              <span>{{ $t("media.searchModeText") }}</span>
+            </button>
+            <button
+              type="button"
+              class="plain mode-pill"
+              :class="{ active: searchMode === 'clip' }"
+              role="tab"
+              :aria-selected="searchMode === 'clip' ? 'true' : 'false'"
+              :disabled="!clipReady"
+              :title="
+                clipReady
+                  ? $t('media.searchModeClipHint')
+                  : $t('media.searchModeClipUnavailable')
+              "
+              @click="onChangeSearchMode('clip')"
+            >
+              <Icon name="cpu" :size="13" />
+              <span>{{ $t("media.searchModeClip") }}</span>
+            </button>
+          </div>
           <div class="input-wrap">
-            <span class="icon-slot"><Icon name="search" :size="16" /></span>
+            <span class="icon-slot">
+              <Icon
+                :name="searchMode === 'clip' ? 'cpu' : 'search'"
+                :size="16"
+              />
+            </span>
             <input
               ref="searchInput"
               v-model="localQuery"
@@ -27,7 +104,11 @@
               inputmode="search"
               enterkeyhint="search"
               autocomplete="off"
-              :placeholder="$t('media.searchPlaceholder')"
+              :placeholder="
+                searchMode === 'clip'
+                  ? $t('media.clipSearchPlaceholder')
+                  : $t('media.searchPlaceholder')
+              "
               @keyup.enter="submitSearch"
             />
             <button
@@ -36,6 +117,7 @@
               type="button"
               :title="$t('media.clearSearch')"
               :aria-label="$t('media.clearSearch')"
+              @mousedown.prevent
               @click="clearSearch"
             >
               <Icon name="x" :size="14" />
@@ -44,17 +126,35 @@
           <button
             class="primary search-submit"
             type="button"
-            :title="$t('media.searchBtn')"
-            :aria-label="$t('media.searchBtn')"
+            :title="
+              searchMode === 'clip'
+                ? $t('media.clipSearchBtn')
+                : $t('media.searchBtn')
+            "
+            :aria-label="
+              searchMode === 'clip'
+                ? $t('media.clipSearchBtn')
+                : $t('media.searchBtn')
+            "
             @click="submitSearch"
           >
-            <Icon name="search" :size="15" />
-            <span class="hide-mobile">{{ $t("media.searchBtn") }}</span>
+            <Icon
+              :name="searchMode === 'clip' ? 'cpu' : 'search'"
+              :size="15"
+            />
+            <span class="hide-mobile">
+              {{
+                searchMode === "clip"
+                  ? $t("media.clipSearchBtn")
+                  : $t("media.searchBtn")
+              }}
+            </span>
           </button>
         </div>
         <div class="toolbar-actions">
           <button
             class="icon view-mode-btn mobile-inline"
+            :class="{ 'force-show': searchMode === 'clip' }"
             type="button"
             :title="viewModeToggleLabel"
             :aria-label="viewModeToggleLabel"
@@ -69,7 +169,7 @@
         </div>
       </div>
 
-      <div class="kind-tabs">
+      <div v-if="searchMode !== 'clip' || !(query || '').trim()" class="kind-tabs">
         <button
           v-for="tab in kindTabs"
           :key="tab.id"
@@ -211,7 +311,7 @@
       />
     </div>
 
-    <footer v-if="totalPages > 0" class="pager">
+    <footer v-if="totalPages > 0 && (searchMode !== 'clip' || !(query || '').trim())" class="pager">
       <button class="icon sm" :disabled="page <= 1" @click="$emit('page-change', page - 1)">
         <Icon name="chevron-left" :size="15" />
       </button>
@@ -247,6 +347,9 @@ interface Props {
   activeCategory?: string;
   categories?: CategoryItem[];
   statVisibility: StatVisibility;
+  searchMode?: "text" | "clip";
+  canUseClipSearch?: boolean;
+  clipReady?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -260,11 +363,15 @@ const props = withDefaults(defineProps<Props>(), {
   stats: () => ({}),
   activeCategory: "",
   categories: () => [],
+  searchMode: "text",
+  canUseClipSearch: false,
+  clipReady: false,
 });
 
 const emit = defineEmits<{
   (e: "search", query: string): void;
   (e: "change-kind", kind: string): void;
+  (e: "change-search-mode", mode: "text" | "clip"): void;
   (e: "toggle-select", id: string | number): void;
   (e: "preview", item: MediaItem): void;
   (e: "detail", item: MediaItem): void;
@@ -444,7 +551,6 @@ const kindTabs = computed(() => [
 function submitSearch() {
   clearSearchTimer();
   emitSearchIfChanged(localQuery.value ?? "");
-  searchInput.value?.blur();
 }
 function clearSearch() {
   clearSearchTimer();
@@ -456,10 +562,17 @@ function pickKind(kind: string) {
   emit("change-kind", kind);
 }
 
+function onChangeSearchMode(mode: "text" | "clip") {
+  if (mode === "clip" && !props.clipReady) return;
+  if (props.searchMode === mode) return;
+  emit("change-search-mode", mode);
+}
+
 const hasActiveFilter = computed(() => {
   const q = (props.query ?? "").trim();
   const k = props.kind ?? "";
   const cat = props.activeCategory ?? "";
+  if (props.searchMode === "clip") return !!q;
   return !!(q || k || cat);
 });
 

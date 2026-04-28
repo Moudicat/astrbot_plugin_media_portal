@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import mimetypes
 import secrets
 import shutil
@@ -16,6 +17,14 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+# CLIP 检索结果的最低展示阈值。
+#
+# 业界经验：OpenCLIP / CN-CLIP / OpenAI CLIP ViT-B 系列在 cosine 归一化后的
+# 「弱相关」阈值大约落在 0.22 附近，低于该值基本是噪声。这里默认裁掉「仅供参考」
+# 档（< 0.22）以及任何非有限值（NaN / Inf，多见于早期写入的坏向量），
+# 这样前端就不会再展示明显不相关的图片，但仍允许较弱的相关结果（≥0.22）出现。
+_CLIP_SCORE_MIN_DISPLAY = 0.22
 
 import aiofiles
 import uvicorn
@@ -126,6 +135,7 @@ except Exception:  # pragma: no cover
 from ..core.category_manager import CategoryManager
 from ..core.derivatives import DerivativesManager
 from ..core.media_manager import DuplicateMediaError, MediaManager, MediaRecord
+from ..core.security import TotpStore
 from ..core.utils import (
     detect_mime_and_kind,
     generate_password,
@@ -137,6 +147,31 @@ from ..core.utils import (
     slugify_category,
     unique_path,
 )
+
+
+def _build_otpauth_qrcode_svg(uri: str) -> str:
+    """把 otpauth:// URI 渲染成 SVG 字符串，前端可直接 `v-html` / `<img src=data:image/svg+xml;...>`。
+
+    依赖 ``qrcode[pil]`` 中的纯 Python QRCode 编码器（不依赖 PIL 渲染本身），失败时返回空串，
+    前端会降级为只展示 secret 文本 + 手动输入的提示。
+    """
+    text = str(uri or "").strip()
+    if not text:
+        return ""
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+    except ImportError:
+        return ""
+    try:
+        img = qrcode.make(text, image_factory=SvgPathImage, box_size=10, border=2)
+        import io as _io
+
+        buf = _io.BytesIO()
+        img.save(buf)
+        return buf.getvalue().decode("utf-8")
+    except Exception:
+        return ""
 
 
 def _copy_tree_overlay(src: Path, dst: Path) -> None:
@@ -188,10 +223,12 @@ class WebUIServer:
         config: dict[str, Any],
         data_root: Path,
         callback_api_base: str = "",
+        intelligence_manager: Any = None,
     ):
         self.media_manager = media_manager
         self.category_manager = category_manager
         self.config = config
+        self.intelligence_manager = intelligence_manager
         self.data_root = data_root.resolve()
         self.media_root = self.media_manager.media_root
         # 缩略图目录转由 DerivativesManager 管辖（plugin_data/derivatives/thumbnails）。
@@ -231,6 +268,14 @@ class WebUIServer:
         )
         self.allowed_origins = self._parse_allowed_origins(config.get("allowed_origins"))
         self._capability_secret = self._load_or_create_capability_secret()
+        self.totp_feature_enabled = bool(config.get("totp_enabled", False))
+        # TotpStore 始终持有（即便功能开关关闭也能查询是否曾绑定过），
+        # 但路由开关由 totp_feature_enabled & store.enabled 联合决定。
+        self._totp_store = TotpStore(
+            state_dir=self.media_manager.plugin_data_dir,
+            issuer=str(config.get("totp_issuer", "Media Portal") or "Media Portal"),
+            account=str(config.get("totp_account", "admin") or "admin"),
+        )
 
         self._access_password = str(config.get("access_password", "") or "").strip()
         self._password_generated = False
@@ -269,6 +314,49 @@ class WebUIServer:
     @property
     def password_generated(self) -> bool:
         return self._password_generated
+
+    @property
+    def totp_active(self) -> bool:
+        """实际是否要在登录时强制 TOTP 二次验证。"""
+        return bool(self.totp_feature_enabled and self._totp_store.enabled)
+
+    def _build_intelligence_summary(self) -> dict[str, Any]:
+        """对外暴露 intelligence 总开关 + 子能力当前状态。
+
+        - 不强依赖 ``IntelligenceManager`` 已挂载，缺失时返回禁用占位，前端会按
+          ``feature_enabled=false`` 隐藏入口。
+        - 子能力是否「真正可用」取决于：
+            (1) feature_enabled；
+            (2) 对应 *_enabled 子开关；
+            (3) 模型在磁盘上的状态为 ``ready``。
+        """
+        manager = self.intelligence_manager
+        if manager is None:
+            return {
+                "feature_enabled": False,
+                "clip_enabled": False,
+                "face_enabled": False,
+                "clip_ready": False,
+                "face_ready": False,
+                "hf_mirror_url": "",
+            }
+        snapshots = manager.snapshots()
+        clip_ready = any(
+            snap.capability == "clip" and snap.status.value == "ready"
+            for snap in snapshots
+        )
+        face_ready = any(
+            snap.capability == "face" and snap.status.value == "ready"
+            for snap in snapshots
+        )
+        return {
+            "feature_enabled": manager.feature_enabled,
+            "clip_enabled": manager.clip_enabled,
+            "face_enabled": manager.face_enabled,
+            "clip_ready": clip_ready and manager.clip_enabled,
+            "face_ready": face_ready and manager.face_enabled,
+            "hf_mirror_url": manager.hf_mirror_url,
+        }
 
     async def _get_trash_retention_days(self) -> int:
         getter = getattr(self.media_manager, "get_trash_retention_days", None)
@@ -630,6 +718,34 @@ class WebUIServer:
     async def _clear_failed_attempts(self, client_ip: str) -> None:
         async with self._attempt_lock:
             self._failed_attempts.pop(client_ip, None)
+
+    async def _issue_login_session(self) -> dict[str, Any]:
+        """登录密码 / TOTP 都通过后，构造完整的会话 token + capability token 响应。"""
+        token = secrets.token_urlsafe(32)
+        now = time.time()
+        async with self._token_lock:
+            self._cleanup_tokens_locked()
+            self._tokens[token] = {
+                "created_at": now,
+                "last_active": now,
+            }
+        media_token = self._issue_capability_token(
+            "media", "*", self.readonly_token_ttl
+        )
+        data_token = (
+            self._issue_capability_token("data", "*", self.data_token_ttl)
+            if self.expose_astrbot_data
+            else ""
+        )
+        return {
+            "token": token,
+            "expires_in": self.session_timeout,
+            "readonly_token": media_token,
+            "readonly_expires_in": self.readonly_token_ttl,
+            "data_token": data_token,
+            "data_expires_in": self.data_token_ttl if self.expose_astrbot_data else 0,
+            "base_url": self.get_preferred_base_url(),
+        }
 
     def _extract_token(self, request: Request) -> str:
         auth_header = request.headers.get("Authorization", "")
@@ -1042,31 +1158,148 @@ class WebUIServer:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="认证失败")
             await self._clear_failed_attempts(client_ip)
 
-            token = secrets.token_urlsafe(32)
-            now = time.time()
-            async with self._token_lock:
-                self._cleanup_tokens_locked()
-                self._tokens[token] = {
-                    "created_at": now,
-                    "last_active": now,
+            if self.totp_active:
+                # TOTP 已启用：先发短期 challenge_token，前端跳到第二步收集 6 位码。
+                challenge = self._issue_capability_token("login_totp", "*", 300)
+                return {
+                    "challenge": "totp",
+                    "challenge_token": challenge,
+                    "expires_in": 300,
+                    "issuer": self._totp_store.state.issuer,
+                    "account": self._totp_store.state.account,
                 }
-            media_token = self._issue_capability_token(
-                "media", "*", self.readonly_token_ttl
-            )
-            data_token = (
-                self._issue_capability_token("data", "*", self.data_token_ttl)
-                if self.expose_astrbot_data
-                else ""
-            )
+            return await self._issue_login_session()
+
+        @self._app.post("/api/login/totp")
+        async def login_totp(request: Request, payload: dict[str, Any]) -> dict[str, Any]:
+            challenge_token = str(payload.get("challenge_token", "") or "").strip()
+            code = str(payload.get("code", "") or "").strip()
+            recovery_code = str(payload.get("recovery_code", "") or "").strip()
+            client_ip = request.client.host if request.client else "unknown"
+
+            if not challenge_token:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="缺少 challenge_token"
+                )
+            if not code and not recovery_code:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="请输入 6 位验证码或恢复码"
+                )
+            if not self._validate_capability_token(
+                challenge_token, scope="login_totp", subject="*"
+            ):
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED, detail="登录会话已过期，请重新输入密码"
+                )
+            if not self.totp_active:
+                # 例如管理员在 challenge 期间关闭了 TOTP，此时直接放行。
+                return await self._issue_login_session()
+
+            ok = False
+            if code:
+                ok = await self._totp_store.verify_code(code)
+            if not ok and recovery_code:
+                ok = await self._totp_store.consume_recovery_code(recovery_code)
+            if not ok:
+                accepted = await self._record_failed_attempt(client_ip)
+                await asyncio.sleep(0.6)
+                if not accepted:
+                    raise HTTPException(
+                        status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="尝试过于频繁，请稍后再试",
+                    )
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="验证码错误")
+            await self._clear_failed_attempts(client_ip)
+            return await self._issue_login_session()
+
+        @self._app.get("/api/account/totp/status")
+        async def get_totp_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
             return {
-                "token": token,
-                "expires_in": self.session_timeout,
-                "readonly_token": media_token,
-                "readonly_expires_in": self.readonly_token_ttl,
-                "data_token": data_token,
-                "data_expires_in": self.data_token_ttl if self.expose_astrbot_data else 0,
-                "base_url": self.get_preferred_base_url(),
+                "feature_enabled": self.totp_feature_enabled,
+                **self._totp_store.public_status(),
             }
+
+        @self._app.post("/api/account/totp/setup")
+        async def post_totp_setup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            if not self.totp_feature_enabled:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="未启用 TOTP 功能，请先在插件配置中开启 webui.totp_enabled。",
+                )
+            try:
+                payload = await self._totp_store.begin_setup()
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
+            payload["qrcode_svg"] = _build_otpauth_qrcode_svg(payload["otpauth_uri"])
+            return payload
+
+        @self._app.post("/api/account/totp/confirm")
+        async def post_totp_confirm(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            try:
+                return await self._totp_store.confirm_setup(
+                    str(payload.get("code", "") or "")
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+
+        @self._app.post("/api/account/totp/cancel-setup")
+        async def post_totp_cancel_setup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            await self._totp_store.cancel_setup()
+            return {"cancelled": True}
+
+        @self._app.post("/api/account/totp/disable")
+        async def post_totp_disable(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            code = str(payload.get("code", "") or "").strip()
+            recovery_code = str(payload.get("recovery_code", "") or "").strip()
+            try:
+                await self._totp_store.disable(
+                    code=code or None, recovery_code=recovery_code or None
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return {"enabled": False}
+
+        @self._app.post("/api/account/totp/regenerate-recovery")
+        async def post_totp_regen_recovery(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            code = str(payload.get("code", "") or "").strip()
+            try:
+                codes = await self._totp_store.regenerate_recovery_codes(code=code)
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                ) from exc
+            return {"recovery_codes": codes, "remaining_recovery_codes": len(codes)}
 
         @self._app.post("/api/logout")
         async def logout(token: str = Depends(self._auth_dependency())) -> dict[str, str]:
@@ -1103,6 +1336,9 @@ class WebUIServer:
                 "max_file_size_mb": max_mb,
                 "max_file_size_bytes": max_bytes,
                 "trash_retention_days": trash_retention_days,
+                "totp_feature_enabled": self.totp_feature_enabled,
+                "totp_active": self.totp_active,
+                "intelligence": self._build_intelligence_summary(),
             }
 
         @self._app.get("/api/settings/trash")
@@ -1703,3 +1939,521 @@ class WebUIServer:
                 upload=archive,
                 replace_media=bool(replace_media),
             )
+
+        # ---- Intelligence (CLIP / Face) ----
+
+        def _require_intelligence():
+            if self.intelligence_manager is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="智能能力未启用",
+                )
+            return self.intelligence_manager
+
+        @self._app.get("/api/intelligence/models")
+        async def intel_list_models(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            return {
+                "feature_enabled": manager.feature_enabled,
+                "clip_enabled": manager.clip_enabled,
+                "face_enabled": manager.face_enabled,
+                "hf_mirror_url": manager.hf_mirror_url,
+                "face_quality": manager.face_quality_thresholds,
+                "models": [snap.to_dict() for snap in manager.snapshots()],
+            }
+
+        @self._app.post("/api/intelligence/models/{model_key}/download")
+        async def intel_start_download(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            spec = manager.get_spec(model_key)
+            if spec is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在")
+            try:
+                await manager.start_download(model_key)
+            except KeyError:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在") from None
+            snap = manager.snapshot(model_key)
+            return {"started": True, "model": snap.to_dict() if snap else None}
+
+        @self._app.post("/api/intelligence/models/{model_key}/cancel")
+        async def intel_cancel_download(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            cancelled = await manager.cancel_download(model_key)
+            snap = manager.snapshot(model_key)
+            return {
+                "cancelled": cancelled,
+                "model": snap.to_dict() if snap else None,
+            }
+
+        @self._app.delete("/api/intelligence/models/{model_key}")
+        async def intel_remove_model(
+            model_key: str,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            spec = manager.get_spec(model_key)
+            if spec is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="模型不存在")
+            await manager.remove_model(model_key)
+            snap = manager.snapshot(model_key)
+            return {"removed": True, "model": snap.to_dict() if snap else None}
+
+        @self._app.patch("/api/intelligence/settings")
+        async def intel_patch_settings(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            manager.update_settings(
+                feature_enabled=payload.get("feature_enabled"),
+                clip_enabled=payload.get("clip_enabled"),
+                face_enabled=payload.get("face_enabled"),
+                hf_mirror_url=payload.get("hf_mirror_url"),
+                max_concurrent_downloads=payload.get("max_concurrent_downloads"),
+                face_min_det_score=payload.get("face_min_det_score"),
+                face_min_face_size=payload.get("face_min_face_size"),
+                face_min_blur_var=payload.get("face_min_blur_var"),
+            )
+            return {
+                "feature_enabled": manager.feature_enabled,
+                "clip_enabled": manager.clip_enabled,
+                "face_enabled": manager.face_enabled,
+                "hf_mirror_url": manager.hf_mirror_url,
+                "face_quality": manager.face_quality_thresholds,
+            }
+
+        # ---- CLIP 索引与语义搜索 ----
+
+        async def _iter_image_records():
+            getter = getattr(self.media_manager, "list_image_records_minimal", None)
+            if not callable(getter):
+                return []
+            return await getter()
+
+        @self._app.get("/api/intelligence/clip/status")
+        async def intel_clip_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_clip_store()
+            indexed = await store.count() if store is not None else 0
+            engine = await manager.get_clip_engine()
+            scan_task = manager._clip_scan_task  # type: ignore[attr-defined]
+            scanning = bool(scan_task and not scan_task.done())
+            worker = manager._clip_worker  # type: ignore[attr-defined]
+            stats = getattr(worker, "stats", None) if worker is not None else None
+            stats_payload: dict[str, Any] = {}
+            if stats is not None:
+                stats_payload = {
+                    "indexed": stats.indexed,
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                    "last_run_at": stats.last_run_at,
+                    "last_error": stats.last_error,
+                }
+            return {
+                "engine_ready": engine is not None,
+                "indexed_count": indexed,
+                "scanning": scanning,
+                "stats": stats_payload,
+            }
+
+        @self._app.post("/api/intelligence/clip/scan")
+        async def intel_clip_scan(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            started = await manager.trigger_clip_scan(
+                iter_image_records=_iter_image_records
+            )
+            return {"started": started}
+
+        @self._app.get("/api/intelligence/clip/search")
+        async def intel_clip_search(
+            q: str,
+            top_k: int = 20,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            text = (q or "").strip()
+            if not text:
+                return {"results": [], "engine_ready": False}
+            limit = max(1, min(100, int(top_k or 20)))
+            pairs = await manager.search_clip_by_text(text, top_k=limit)
+            results: list[dict[str, Any]] = []
+            for media_id, score in pairs:
+                if not math.isfinite(score) or score < _CLIP_SCORE_MIN_DISPLAY:
+                    # 「仅供参考」档（含坏向量产生的 NaN）一律不返回，
+                    # 避免前端列表里出现明显不相关的结果。
+                    continue
+                getter = getattr(self.media_manager, "get_by_id", None)
+                if not callable(getter):
+                    continue
+                record = await getter(media_id)
+                if record is None:
+                    continue
+                payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                payload["score"] = float(score)
+                results.append(payload)
+            return {
+                "results": results,
+                "engine_ready": True,
+                "query": text,
+                "min_score": _CLIP_SCORE_MIN_DISPLAY,
+            }
+
+        @self._app.delete("/api/intelligence/clip/index/{media_id}")
+        async def intel_clip_remove_one(
+            media_id: int,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_clip_store()
+            if store is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="CLIP 未启用"
+                )
+            await store.delete(int(media_id))
+            return {"removed": True, "media_id": media_id}
+
+        # ---- 人脸 / Person 管理 ----
+
+        async def _require_face_store():
+            manager = _require_intelligence()
+            store = await manager.get_face_store()
+            if store is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="人脸功能未启用"
+                )
+            return manager, store
+
+        async def _require_face_clusterer():
+            manager = _require_intelligence()
+            clusterer = await manager.get_face_clusterer()
+            if clusterer is None:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, detail="人脸功能未启用"
+                )
+            return manager, clusterer
+
+        async def _attach_media_meta(items: list[dict[str, Any]]) -> None:
+            getter = getattr(self.media_manager, "get_by_id", None)
+            if not callable(getter):
+                return
+            cache: dict[int, Any] = {}
+            for item in items:
+                mid = item.get("media_id")
+                if mid is None:
+                    continue
+                if mid not in cache:
+                    cache[mid] = await getter(int(mid))
+                record = cache[mid]
+                if record is None:
+                    continue
+                payload = (
+                    record.to_dict() if hasattr(record, "to_dict") else dict(record)
+                )
+                item["media"] = {
+                    "id": payload.get("id"),
+                    "filename": payload.get("filename"),
+                    "category": payload.get("category"),
+                    "kind": payload.get("kind"),
+                    "rel_path": payload.get("rel_path"),
+                    "size": payload.get("size"),
+                    "size_human": payload.get("size_human"),
+                    "tags": payload.get("tags"),
+                }
+
+        @self._app.get("/api/intelligence/face/status")
+        async def intel_face_status(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            store = await manager.get_face_store()
+            engine = await manager.get_face_engine()
+            face_count = await store.count_faces() if store else 0
+            person_count = await store.count_persons() if store else 0
+            scan_task = manager._face_scan_task  # type: ignore[attr-defined]
+            scanning = bool(scan_task and not scan_task.done())
+            worker = manager._face_worker  # type: ignore[attr-defined]
+            stats = getattr(worker, "stats", None) if worker is not None else None
+            stats_payload: dict[str, Any] = {}
+            if stats is not None:
+                stats_payload = {
+                    "media_processed": stats.media_processed,
+                    "faces_indexed": stats.faces_indexed,
+                    "faces_filtered": getattr(stats, "faces_filtered", 0),
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                    "last_run_at": stats.last_run_at,
+                    "last_error": stats.last_error,
+                }
+            return {
+                "engine_ready": engine is not None,
+                "face_count": face_count,
+                "person_count": person_count,
+                "scanning": scanning,
+                "stats": stats_payload,
+                "thresholds": manager.face_quality_thresholds,
+            }
+
+        @self._app.post("/api/intelligence/face/scan")
+        async def intel_face_scan(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            started = await manager.trigger_face_scan(
+                iter_image_records=_iter_image_records
+            )
+            return {"started": started}
+
+        @self._app.post("/api/intelligence/face/recluster")
+        async def intel_face_recluster(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            report = await clusterer.recluster_dbscan()
+            return {
+                "persons_before": report.persons_before,
+                "persons_after": report.persons_after,
+                "merged": report.merged,
+                "created": report.created,
+                "moved_faces": report.moved_faces,
+            }
+
+        @self._app.get("/api/intelligence/face/persons")
+        async def intel_face_list_persons(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            persons = await store.list_persons()
+            return {"persons": [p.to_dict() for p in persons]}
+
+        @self._app.get("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_detail(
+            person_id: int,
+            limit: int = 200,
+            offset: int = 0,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            person = await store.get_person(person_id)
+            if person is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="角色不存在")
+            faces = await store.list_faces_by_person(
+                person_id, limit=max(1, min(500, limit)), offset=max(0, offset)
+            )
+            face_dicts = [face.to_dict() for face in faces]
+            await _attach_media_meta(face_dicts)
+            return {
+                "person": person.to_dict(),
+                "faces": face_dicts,
+            }
+
+        @self._app.patch("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_rename(
+            person_id: int,
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            name = payload.get("name")
+            sample = payload.get("sample_face_id")
+            if sample is not None:
+                sample_face = await store.get_face(int(sample))
+                if sample_face is None or int(sample_face.person_id or 0) != int(person_id):
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        detail="封面人脸不属于该角色",
+                    )
+            await store.update_person(
+                person_id,
+                name=str(name) if name is not None else None,
+                sample_face_id=int(sample) if sample is not None else None,
+            )
+            person = await store.get_person(person_id)
+            return {"person": person.to_dict() if person else None}
+
+        @self._app.post("/api/intelligence/face/persons/merge")
+        async def intel_face_person_merge(
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            target = payload.get("target_id")
+            sources = payload.get("source_ids") or []
+            if target is None or not isinstance(sources, list) or not sources:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    detail="缺少 target_id 或 source_ids",
+                )
+            moved = await clusterer.merge_persons(
+                [int(v) for v in sources], int(target)
+            )
+            return {"merged": True, "moved_faces": moved}
+
+        @self._app.post("/api/intelligence/face/persons/{person_id}/split")
+        async def intel_face_person_split(
+            person_id: int,
+            payload: dict[str, Any],
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, clusterer = await _require_face_clusterer()
+            face_ids = payload.get("face_ids") or []
+            new_name = str(payload.get("name") or "")
+            if not isinstance(face_ids, list) or not face_ids:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, detail="缺少 face_ids"
+                )
+            new_id = await clusterer.split_persons(
+                int(person_id),
+                [int(v) for v in face_ids],
+                new_name=new_name,
+            )
+            return {"new_person_id": new_id}
+
+        @self._app.delete("/api/intelligence/face/persons/{person_id}")
+        async def intel_face_person_delete(
+            person_id: int,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            _, store = await _require_face_store()
+            await store.delete_person(int(person_id))
+            return {"deleted": True}
+
+        async def _list_valid_media_ids() -> set[int]:
+            getter = getattr(self.media_manager, "list_image_records_minimal", None)
+            if not callable(getter):
+                return set()
+            try:
+                records = await getter()
+            except Exception:
+                records = []
+            ids: set[int] = set()
+            for rec in records or []:
+                try:
+                    ids.add(int(rec[0]))
+                except Exception:
+                    continue
+            return ids
+
+        async def _resolve_media_path(media_id: int) -> str | None:
+            getter = getattr(self.media_manager, "get_by_id", None)
+            if not callable(getter):
+                return None
+            try:
+                record = await getter(int(media_id))
+            except Exception:
+                return None
+            if record is None:
+                return None
+            payload = record.to_dict() if hasattr(record, "to_dict") else dict(record)
+            abs_path = payload.get("abs_path") or ""
+            if not abs_path:
+                return None
+            return str(abs_path)
+
+        @self._app.post("/api/intelligence/face/cleanup")
+        async def intel_face_cleanup(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            valid = await _list_valid_media_ids()
+            removed = await manager.cleanup_face_orphans(valid)
+            return {"removed": int(removed)}
+
+        @self._app.post("/api/intelligence/face/clear")
+        async def intel_face_clear_all(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            """删除所有人脸数据（高危操作）。
+
+            会清空 ``face_records`` / ``face_persons`` / ``face_scans`` 三张表，
+            并删除 ``face_thumbs`` 目录下的所有缩略图文件。
+            """
+            _ = token
+            manager = _require_intelligence()
+            summary = await manager.clear_all_face_data()
+            return {
+                "face_count": int(summary.get("face_count", 0)),
+                "person_count": int(summary.get("person_count", 0)),
+                "thumbs_removed": int(summary.get("thumbs_removed", 0)),
+            }
+
+        @self._app.post("/api/intelligence/face/prune")
+        async def intel_face_prune(
+            payload: dict[str, Any] | None = None,
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            """按当前阈值（或 payload 显式指定）清理已有低质量人脸。"""
+            _ = token
+            manager = _require_intelligence()
+            payload = payload or {}
+            result = await manager.prune_low_quality_faces(
+                min_det_score=payload.get("min_det_score"),
+                min_face_size=payload.get("min_face_size"),
+                min_blur_var=payload.get("min_blur_var"),
+                ignore_blur_var_zero=bool(
+                    payload.get("ignore_blur_var_zero", True)
+                ),
+            )
+            removed_ids = list(result.get("removed", []))
+            return {
+                "removed": len(removed_ids),
+                "removed_ids": removed_ids,
+                "thresholds": result.get("thresholds", {}),
+            }
+
+        @self._app.post("/api/intelligence/face/thumbs/rebuild")
+        async def intel_face_thumbs_rebuild(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            _ = token
+            manager = _require_intelligence()
+            processed, failed = await manager.regenerate_face_thumbs(
+                _resolve_media_path
+            )
+            return {"processed": int(processed), "failed": int(failed)}
+
+        @self._app.get("/api/intelligence/face/{face_id}/thumb")
+        async def intel_face_thumb(
+            face_id: int,
+            request: Request,
+        ) -> FileResponse:
+            if not await self._can_access_media_file(request, "*"):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="未认证")
+            _, store = await _require_face_store()
+            face = await store.get_face(int(face_id))
+            if face is None or not face.thumb_path:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="缩略图不存在")
+            path = Path(face.thumb_path)
+            if not path.is_file():
+                raise HTTPException(status.HTTP_404_NOT_FOUND, detail="缩略图文件丢失")
+            return FileResponse(path=path, media_type="image/jpeg")

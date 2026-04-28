@@ -1,0 +1,10 @@
+# 可选：启用人脸检测 / 识别所需依赖。
+# 安装方式：pip install -r requirements-face.txt
+#
+# 模型默认使用 InsightFace 的 buffalo_s（检测 + 识别 + 关键点 + 属性）。
+
+insightface>=0.7.3
+onnxruntime>=1.17
+scikit-learn>=1.3
+numpy>=1.26
+Pillow>=10.0

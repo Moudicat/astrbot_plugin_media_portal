@@ -1,0 +1,11 @@
+# 可选：启用 CLIP 语义检索所需依赖。
+# 安装方式：pip install -r requirements-clip.txt
+#
+# 模型由 IntelligenceManager 在 WebUI 设置面板中按需下载，
+# 默认拉取 Xenova/chinese-clip-vit-base-patch16（ONNX 量化版）。
+
+onnxruntime>=1.17
+tokenizers>=0.15
+Pillow>=10.0
+numpy>=1.26
+hnswlib>=0.7

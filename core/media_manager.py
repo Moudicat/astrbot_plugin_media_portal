@@ -8,7 +8,7 @@ import shutil
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import aiosqlite
 
@@ -127,6 +127,11 @@ class MediaManager:
         self._fts_tokenizer: str = ""
         # 后台衍生任务（预生成缩略图 / 波形等），跟踪起来方便 close() 时统一清理。
         self._derivative_tasks: set[asyncio.Task] = set()
+        # 媒体落地后通知钩子：(record, kind: 'created'|'updated'|'restored') -> awaitable | None。
+        # 主要给 IntelligenceManager 用：上传成功后异步触发 CLIP / Face 增量索引。
+        self._post_save_callbacks: list[
+            Callable[[MediaRecord, str], Awaitable[None] | None]
+        ] = []
 
     async def initialize(self) -> None:
         async with self._db_lock:
@@ -340,6 +345,7 @@ class MediaManager:
                 self.derivatives.generate_all_sync(record.rel_path, record.kind)
             except Exception as exc:
                 logger.debug("同步生成衍生资源失败 %s: %s", record.rel_path, exc)
+            self._dispatch_post_save_sync(record, "created")
             return
         task = running.create_task(
             self.derivatives.generate_all(record.rel_path, record.kind)
@@ -356,6 +362,43 @@ class MediaManager:
                 logger.debug("衍生资源后台任务失败: %s", exc)
 
         task.add_done_callback(_on_done)
+        self._dispatch_post_save_async(record, "created")
+
+    def register_post_save_callback(
+        self,
+        callback: Callable[[MediaRecord, str], Awaitable[None] | None],
+    ) -> None:
+        """注册媒体落地后的回调；同一回调多次注册只保留一份。"""
+        if callback not in self._post_save_callbacks:
+            self._post_save_callbacks.append(callback)
+
+    def _dispatch_post_save_sync(self, record: MediaRecord, action: str) -> None:
+        for cb in tuple(self._post_save_callbacks):
+            try:
+                ret = cb(record, action)
+                if asyncio.iscoroutine(ret):
+                    ret.close()
+            except Exception as exc:
+                logger.debug("post_save 同步回调异常: %s", exc)
+
+    def _dispatch_post_save_async(self, record: MediaRecord, action: str) -> None:
+        if not self._post_save_callbacks:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._dispatch_post_save_sync(record, action)
+            return
+        for cb in tuple(self._post_save_callbacks):
+            try:
+                ret = cb(record, action)
+            except Exception as exc:
+                logger.debug("post_save 同步回调异常: %s", exc)
+                continue
+            if asyncio.iscoroutine(ret):
+                cb_task = loop.create_task(ret)
+                self._derivative_tasks.add(cb_task)
+                cb_task.add_done_callback(self._derivative_tasks.discard)
 
     async def rebuild_fts_index(self) -> bool:
         """强制重建 FTS 索引内容（当手动外部写入数据库或怀疑索引漂移时使用）。"""
@@ -697,6 +740,25 @@ class MediaManager:
         if not row:
             return None
         return self._row_to_record(row)
+
+    async def list_image_records_minimal(self) -> list[tuple[int, str, str]]:
+        """供智能能力（CLIP / 人脸）拉取所有图片记录的极简视图。
+
+        返回 ``[(media_id, sha256, abs_path)]``，避免一次性反序列化完整 ``MediaRecord``。
+        """
+        conn = await self._ensure_conn()
+        cursor = await conn.execute(
+            "SELECT id, sha256, rel_path FROM media WHERE kind = 'image'"
+        )
+        rows = await cursor.fetchall()
+        return [
+            (
+                int(row["id"]),
+                str(row["sha256"] or ""),
+                str((self.media_root / row["rel_path"]).resolve()),
+            )
+            for row in rows
+        ]
 
     async def _get_by_sha256(self, sha256: str) -> MediaRecord | None:
         conn = await self._ensure_conn()

@@ -16,11 +16,15 @@
     # 4) 指定开发用数据目录（默认 ./.devdata 下）
     python scripts/debug_webui.py --data-dir D:/tmp/mp-dev/plugin --astrbot-data D:/tmp/mp-dev/astrbot
 
+    # 5) 关闭 TOTP（默认开启，方便本地直接体验「设置 → 账号安全」绑定流程）
+    python scripts/debug_webui.py --no-totp
+
 说明：
 - 前端静态资源（index.html / app.js / styles.css / components/*）均按请求从磁盘读取，
   修改后**刷新浏览器即可生效**，无需重启服务。
 - 仅 Python 代码改动需要重启（或使用 ``--reload``）。
 - 调试数据默认落在 ``./.devdata/``（已在 .gitignore 排除）；可随时删除。
+- 调试模式下 ``webui.totp_enabled`` 默认开启；首次启用 TOTP 前需要 ``pip install -r requirements-totp.txt``。
 """
 
 from __future__ import annotations
@@ -139,6 +143,10 @@ from astrbot_plugin_media_portal.core import (  # noqa: E402  (必须后置)
     MediaManager,
     load_plugin_settings,
 )
+from astrbot_plugin_media_portal.core.intelligence import (  # noqa: E402
+    IntelligenceManager,
+    attach_auto_scan_post_save,
+)
 from astrbot_plugin_media_portal.webui import WebUIServer  # noqa: E402
 
 
@@ -156,6 +164,14 @@ def _build_raw_config(
     public_base_url: str,
     expose_data: bool,
     allowed_origins: list[str],
+    totp_enabled: bool,
+    totp_issuer: str,
+    totp_account: str,
+    intelligence_enabled: bool,
+    clip_enabled: bool,
+    face_enabled: bool,
+    hf_mirror_url: str,
+    max_concurrent_downloads: int,
 ) -> dict[str, Any]:
     return {
         "webui": {
@@ -170,12 +186,22 @@ def _build_raw_config(
             "readonly_token_ttl": max(session_timeout, 3600),
             "share_url_ttl": max(session_timeout, 3600),
             "data_token_ttl": max(session_timeout, 3600),
+            "totp_enabled": totp_enabled,
+            "totp_issuer": totp_issuer,
+            "totp_account": totp_account,
         },
         "storage": {"location_mode": "plugin_data"},
         "downloader": {
             "max_file_size_mb": 500,
             "allowed_kinds": ["image", "video", "audio"],
             "default_move_local": True,
+        },
+        "intelligence": {
+            "enabled": intelligence_enabled,
+            "clip_enabled": clip_enabled,
+            "face_enabled": face_enabled,
+            "hf_mirror_url": hf_mirror_url,
+            "max_concurrent_downloads": max_concurrent_downloads,
         },
     }
 
@@ -195,7 +221,9 @@ def _resolve_dev_paths(data_dir: str, astrbot_data: str) -> tuple[Path, Path]:
     return plugin_data, astrbot_data_path
 
 
-def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
+def _build_server(
+    args: argparse.Namespace,
+) -> tuple[WebUIServer, MediaManager, IntelligenceManager]:
     plugin_data, astrbot_data = _resolve_dev_paths(args.data_dir, args.astrbot_data)
     os.environ["MP_DEBUG_ASTRBOT_DATA"] = str(astrbot_data)
 
@@ -207,6 +235,14 @@ def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
         public_base_url=args.public_base_url,
         expose_data=bool(args.expose_data),
         allowed_origins=[o for o in (args.allowed_origins or "").split(",") if o.strip()],
+        totp_enabled=bool(getattr(args, "totp_enabled", True)),
+        totp_issuer=str(getattr(args, "totp_issuer", "Media Portal (Debug)")),
+        totp_account=str(getattr(args, "totp_account", "debug-admin")),
+        intelligence_enabled=bool(getattr(args, "intelligence_enabled", False)),
+        clip_enabled=bool(getattr(args, "clip_enabled", False)),
+        face_enabled=bool(getattr(args, "face_enabled", False)),
+        hf_mirror_url=str(getattr(args, "hf_mirror", "") or ""),
+        max_concurrent_downloads=int(getattr(args, "max_concurrent_downloads", 1) or 1),
     )
     settings = load_plugin_settings(raw_config, plugin_data_dir=plugin_data)
 
@@ -227,18 +263,38 @@ def _build_server(args: argparse.Namespace) -> tuple[WebUIServer, MediaManager]:
         max_file_size_mb=settings.downloader.max_file_size_mb,
         default_move_local=settings.downloader.default_move_local,
     )
+    intelligence_manager = IntelligenceManager(
+        plugin_data_dir=settings.plugin_data_dir,
+        feature_enabled=settings.intelligence.enabled,
+        clip_enabled=settings.intelligence.clip_enabled,
+        face_enabled=settings.intelligence.face_enabled,
+        hf_mirror_url=settings.intelligence.hf_mirror_url,
+        max_concurrent_downloads=settings.intelligence.max_concurrent_downloads,
+    )
     server = WebUIServer(
         media_manager=media_manager,
         category_manager=category_manager,
         config=raw_config["webui"],
         data_root=settings.astrbot_data_dir,
+        intelligence_manager=intelligence_manager,
     )
-    return server, media_manager
+    return server, media_manager, intelligence_manager
 
 
-async def _prepare_server(media_manager: MediaManager) -> None:
+async def _prepare_server(
+    media_manager: MediaManager,
+    intelligence_manager: IntelligenceManager | None = None,
+) -> None:
     await media_manager.initialize()
     await media_manager.ensure_scanned()
+    # 让"上传/恢复后自动触发 CLIP / 人脸扫描"的钩子在调试模式下也生效。
+    # 否则 ``main.py`` 里注册的 post_save 回调不会出现在 debug_webui 路径里，
+    # 上传图片时进度条永远看不到扫描在跑。
+    if intelligence_manager is not None:
+        attach_auto_scan_post_save(
+            media_manager=media_manager,
+            intelligence_manager=intelligence_manager,
+        )
 
 
 def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
@@ -259,6 +315,22 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
     print(f"  Plugin data    : {server.media_manager.plugin_data_dir}")
     print(f"  AstrBot data   : {server.data_root}")
     print(f"  Expose data    : {server.expose_astrbot_data}")
+    totp_state = "on" if server.totp_feature_enabled else "off"
+    if server.totp_feature_enabled:
+        if server.totp_active:
+            totp_state = "on (bound)"
+        else:
+            totp_state = "on (not yet bound — open Settings → Account security)"
+    print(f"  TOTP feature   : {totp_state}")
+    if server.totp_feature_enabled:
+        try:
+            import pyotp  # noqa: F401
+            import qrcode  # noqa: F401
+        except ImportError:
+            print(
+                "  [warn]         pyotp / qrcode missing — run "
+                "`pip install -r requirements-totp.txt` to enable bind / verify."
+            )
     print(bar)
     print("  Ctrl+C to stop. Frontend edits hot-reload without restart.")
     print(bar)
@@ -270,8 +342,8 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
 
 
 async def _run_forever(args: argparse.Namespace) -> None:
-    server, media_manager = _build_server(args)
-    await _prepare_server(media_manager)
+    server, media_manager, intelligence_manager = _build_server(args)
+    await _prepare_server(media_manager, intelligence_manager)
     _print_banner(server, args)
     await server.start()
     stop_event = asyncio.Event()
@@ -281,6 +353,8 @@ async def _run_forever(args: argparse.Namespace) -> None:
         pass
     finally:
         await server.stop()
+        with contextlib.suppress(Exception):
+            await intelligence_manager.shutdown()
         await media_manager.close()
 
 
@@ -300,13 +374,23 @@ def _args_from_env() -> argparse.Namespace:
         session_timeout=int(os.environ.get("MP_DEBUG_SESSION_TIMEOUT", "86400")),
         public_base_url=os.environ.get("MP_DEBUG_PUBLIC_BASE_URL", ""),
         allowed_origins=os.environ.get("MP_DEBUG_ALLOWED_ORIGINS", ""),
+        totp_enabled=os.environ.get("MP_DEBUG_TOTP_ENABLED", "1") == "1",
+        totp_issuer=os.environ.get("MP_DEBUG_TOTP_ISSUER", "Media Portal (Debug)"),
+        totp_account=os.environ.get("MP_DEBUG_TOTP_ACCOUNT", "debug-admin"),
+        intelligence_enabled=os.environ.get("MP_DEBUG_INTELLIGENCE_ENABLED", "0") == "1",
+        clip_enabled=os.environ.get("MP_DEBUG_CLIP_ENABLED", "0") == "1",
+        face_enabled=os.environ.get("MP_DEBUG_FACE_ENABLED", "0") == "1",
+        hf_mirror=os.environ.get("MP_DEBUG_HF_MIRROR", ""),
+        max_concurrent_downloads=int(
+            os.environ.get("MP_DEBUG_INTELLIGENCE_MAX_CONCURRENT", "1") or "1"
+        ),
     )
 
 
 def create_app():
     """uvicorn 工厂函数，供 ``--reload`` 模式使用。"""
     args = _args_from_env()
-    server, media_manager = _build_server(args)
+    server, media_manager, intelligence_manager = _build_server(args)
 
     app = server.app
     _print_banner(server, args)
@@ -316,7 +400,7 @@ def create_app():
     @contextlib.asynccontextmanager
     async def _lifespan(_app):
         async with previous_lifespan(_app):
-            await _prepare_server(media_manager)
+            await _prepare_server(media_manager, intelligence_manager)
             server._cleanup_task = asyncio.create_task(server._periodic_cleanup())
             try:
                 yield
@@ -326,6 +410,8 @@ def create_app():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError, Exception):
                         await task
+                with contextlib.suppress(Exception):
+                    await intelligence_manager.shutdown()
                 await media_manager.close()
 
     app.router.lifespan_context = _lifespan
@@ -358,6 +444,22 @@ def _run_with_reload(args: argparse.Namespace) -> None:
     os.environ["MP_DEBUG_SESSION_TIMEOUT"] = str(args.session_timeout)
     os.environ["MP_DEBUG_PUBLIC_BASE_URL"] = args.public_base_url or ""
     os.environ["MP_DEBUG_ALLOWED_ORIGINS"] = args.allowed_origins or ""
+    os.environ["MP_DEBUG_TOTP_ENABLED"] = "1" if args.totp_enabled else "0"
+    os.environ["MP_DEBUG_TOTP_ISSUER"] = args.totp_issuer or "Media Portal (Debug)"
+    os.environ["MP_DEBUG_TOTP_ACCOUNT"] = args.totp_account or "debug-admin"
+    os.environ["MP_DEBUG_INTELLIGENCE_ENABLED"] = (
+        "1" if getattr(args, "intelligence_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_CLIP_ENABLED"] = (
+        "1" if getattr(args, "clip_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_FACE_ENABLED"] = (
+        "1" if getattr(args, "face_enabled", False) else "0"
+    )
+    os.environ["MP_DEBUG_HF_MIRROR"] = str(getattr(args, "hf_mirror", "") or "")
+    os.environ["MP_DEBUG_INTELLIGENCE_MAX_CONCURRENT"] = str(
+        int(getattr(args, "max_concurrent_downloads", 1) or 1)
+    )
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     parent_str = str(PACKAGE_PARENT)
     if parent_str not in existing_pythonpath.split(os.pathsep):
@@ -434,6 +536,71 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--reload",
         action="store_true",
         help="启用 Python 代码热重载（需 watchfiles；修改 core/webui 的 .py 后自动重启）",
+    )
+    totp_group = parser.add_mutually_exclusive_group()
+    totp_group.add_argument(
+        "--totp",
+        dest="totp_enabled",
+        action="store_true",
+        default=True,
+        help="启用 TOTP 双因素登录开关（默认开启，可在「设置 → 账号安全」中绑定）",
+    )
+    totp_group.add_argument(
+        "--no-totp",
+        dest="totp_enabled",
+        action="store_false",
+        help="关闭 TOTP 双因素登录开关（仅密码登录）",
+    )
+    parser.add_argument(
+        "--totp-issuer",
+        default="Media Portal (Debug)",
+        help="TOTP otpauth:// 发行方名称（写入二维码）",
+    )
+    parser.add_argument(
+        "--totp-account",
+        default="debug-admin",
+        help="TOTP otpauth:// 账号名（在 Authenticator 中显示）",
+    )
+    intel_group = parser.add_mutually_exclusive_group()
+    intel_group.add_argument(
+        "--intelligence",
+        dest="intelligence_enabled",
+        action="store_true",
+        default=False,
+        help="启用智能能力总开关（CLIP / 人脸子能力仍需各自开启）",
+    )
+    intel_group.add_argument(
+        "--no-intelligence",
+        dest="intelligence_enabled",
+        action="store_false",
+        help="关闭智能能力总开关（默认）",
+    )
+    parser.add_argument(
+        "--clip",
+        dest="clip_enabled",
+        action="store_true",
+        default=False,
+        help="启用 CLIP 子能力（仅决定 UI 标记，模型仍需手动下载）",
+    )
+    parser.add_argument(
+        "--face",
+        dest="face_enabled",
+        action="store_true",
+        default=False,
+        help="启用人脸子能力（仅决定 UI 标记，模型仍需手动下载）",
+    )
+    parser.add_argument(
+        "--hf-mirror",
+        dest="hf_mirror",
+        default="",
+        help="HuggingFace 镜像 URL（空表示直连，例如 https://hf-mirror.com）",
+    )
+    parser.add_argument(
+        "--intelligence-max-concurrent",
+        dest="max_concurrent_downloads",
+        type=int,
+        default=1,
+        help="智能模型并发下载数（1~3，默认 1）",
     )
     return parser.parse_args(argv)
 
