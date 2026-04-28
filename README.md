@@ -152,10 +152,6 @@ pip install -r requirements.txt
 
 - `search_media_semantic(query, limit, category)`  
   本地 CLIP 语义检索，按自然语言搜索媒体库（仅在 CLIP 模型就绪时可用）。
-- `list_face_persons(limit)`  
-  列出已识别的人物聚类（含 ID、名称、人脸数）。
-- `find_media_with_person(person, limit)`  
-  按人物 ID 或名称返回该人物出现过的媒体列表。
 
 ## 🧰 命令列表
 
@@ -197,9 +193,9 @@ pip install -r requirements.txt
 
 - `enabled`：智能能力总开关；关闭时 CLIP / 人脸均不会加载，所有相关 API 与 LLM 工具均不暴露；
 - `hf_mirror_url`：HuggingFace 镜像（如 `https://hf-mirror.com`），留空走官方源；
-- `clip_enabled`：是否启用 CLIP 语义检索（需要 `requirements-clip.txt` 与已下载的 CLIP 模型）；
-- `face_enabled`：是否启用人脸检测/识别（需要 `requirements-face.txt` 与已下载的 InsightFace 模型）；
 - `max_concurrent_downloads`：模型并发下载数（默认 1，最大 3）。
+
+> CLIP / 人脸子能力开关、人脸入库质量阈值等在 WebUI「设置 → 本地模型管理」中维护，并持久化到插件数据目录下的 `intelligence/settings.json`。
 
 ### `storage`
 
@@ -243,36 +239,29 @@ SQLite 中保存的是相对媒体根目录的路径，**切换模式本身不�
 
 ## 🧠 智能能力（可选）
 
-智能能力套件全部基于本地 ONNX Runtime 推理，不向外部任何模型服务发送数据。开启后：
+智能能力套件全部基于本地模型推理，不向外部模型服务发送图片、文本或人脸数据。开启后：
 
 | 能力 | 模型 | 说明 |
 | --- | --- | --- |
 | **CLIP 语义检索** | `Xenova/chinese-clip-vit-base-patch16` (ONNX) | 把媒体库中的图片编码为 512 维向量，支持中/英自然语言查询；命中后按余弦相似度排序。 |
-| **人脸检测 + 识别** | `InsightFace buffalo_s` (ONNX) | RetinaFace 检测 + ArcFace 512 维嵌入，自动按相似度聚类成「人物」，支持改名、合并、拆分。 |
+| **人脸检测 + 识别** | `InsightFace buffalo_s` (ONNX) | SCRFD 检测 + ArcFace 512 维嵌入，自动按相似度聚类成「人物」，支持改名、合并、拆分和手动选择封面。 |
 
 ### 1️⃣ 总开关与依赖
 
-1. 先在 `_conf_schema.json` / AstrBot 配置中将 `intelligence.enabled` 打开，并按需开启 `clip_enabled` / `face_enabled`；
-2. 安装可选依赖（按需）：
-
-```bash
-# CLIP 语义检索（onnxruntime + tokenizers + Pillow + numpy）
-pip install -r requirements-clip.txt
-
-# 人脸检测 / 识别（insightface + scikit-learn + opencv-python-headless 等）
-pip install -r requirements-face.txt
-```
-
-3. 国内网络受限时可在配置中填写 `intelligence.hf_mirror_url`（例如 `https://hf-mirror.com`），下载器会自动重写所有 `huggingface.co` 链接。
+1. 先在 AstrBot 插件配置中打开 `intelligence.enabled` 总开关；
+2. 进入 WebUI「本地模型管理」，按需下载 CLIP 或人脸模型；
+3. 下载模型时会自动检查并安装该模型需要的可选依赖，进度会显示在模型卡片和进度中心；
+4. 模型和依赖就绪后，再在模型卡片中手动开启对应能力；
+5. 国内网络受限时可填写 HuggingFace 镜像（例如 `https://hf-mirror.com`），下载器会自动重写所有 `huggingface.co` 链接。
 
 ### 2️⃣ 后台下载 / 启停模型
 
-在 WebUI「设置 → 智能能力」面板可看到：
+在 WebUI「本地模型管理」面板可看到：
 
-- **CLIP / Face 模型卡**：显示状态（未下载 / 下载中 / 就绪 / 校验失败），可单击触发下载、断点续传或删除；
-- **进度条**：实时显示每个模型文件的字节进度与 SHA256 校验情况；
-- **启用开关**：在依赖与模型都就绪后才能勾上，开启后立即生效；
-- **后台索引**：启用后台异步扫描存量媒体，建立 CLIP 向量索引、人脸索引与缩略图，支持中途停止与全量重建。
+- **CLIP / Face 模型**：显示状态（未下载 / 下载中 / 就绪 / 失败等），可触发下载、取消下载或删除模型文件；
+- **依赖安装进度**：缺少可选依赖时会自动补装，并显示当前安装阶段；
+- **启用开关**：模型就绪后可手动开启对应能力，开启后立即生效；
+- **后台索引**：可手动扫描存量媒体，建立 CLIP 向量索引、人脸索引与缩略图；新增媒体也会自动进入后台索引流程。
 
 模型与索引文件落在：
 
@@ -280,20 +269,22 @@ pip install -r requirements-face.txt
 data/plugin_data/astrbot_plugin_media_portal/
 ├── intelligence/
 │   ├── models/                # 下载好的 ONNX / tokenizer 等
+│   ├── settings.json          # WebUI 中保存的智能能力开关与阈值
 │   ├── clip_index.db          # CLIP 向量索引
 │   └── face_index.db          # 人脸 / 人物 / 缩略图记录
 └── ...
 ```
 
-### 3️⃣ 人脸聚类页面
+### 3️⃣ 人物页面
 
-WebUI 左侧菜单「人脸」入口（仅在 `face_enabled=true` 时显示）：
+WebUI 左侧菜单「人物」入口（启用智能能力总开关并开启人脸能力后显示）：
 
-- **概览**：总人脸数、已聚类人物数、未识别人脸数、最近一次扫描状态；
-- **人物卡片**：按代表性缩略图展示，可一键改名、查看所有人脸、删除人物；
+- **概览**：显示人物数、人脸数、上次运行时间和引擎状态；
+- **人物卡片**：按封面缩略图展示，可查看详情、批量选择和删除人物；
+- **封面选择**：进入人物详情后，可选择更好看的人脸作为人物封面；
 - **批量合并**：勾选 2 个以上人物后，一键合并到目标人物；
 - **拆分**：进入人物详情，挑选若干人脸后「拆分为新人物」；
-- **重新聚类**：当新增大量媒体或调整阈值后，可手动触发全量 DBSCAN 重聚类。
+- **重新聚类 / 清理 / 重建缩略图**：可按需重新聚类、清理无效人脸或重建人脸缩略图。
 
 ### 4️⃣ LLM 工具暴露
 
@@ -302,14 +293,12 @@ WebUI 左侧菜单「人脸」入口（仅在 `face_enabled=true` 时显示）�
 | 工具 | 说明 |
 | --- | --- |
 | `search_media_semantic` | 自然语言语义检索（基于 CLIP） |
-| `list_face_persons` | 列出聚类得到的人物 |
-| `find_media_with_person` | 按人物 ID/名称查找包含该人物的媒体 |
 
 ### 5️⃣ 隐私 & 资源说明
 
-- 所有图像、向量、人脸缩略图都仅落本地，不会发送到外部服务；
-- 后台索引采用低优先级队列，可随时在面板停止；
-- 推理走 CPU ONNX Runtime，单张图编码毫秒级；如需 GPU，可自行替换 `onnxruntime-gpu`；
+- 所有图像、向量、人脸缩略图都仅落本地，不会发送到外部模型服务；
+- 模型文件从 HuggingFace 或配置的镜像下载，推理和索引在本机完成；
+- CLIP / 人脸能力均需手动下载模型并开启，不会默认启用；
 - 关闭对应能力后，索引文件**保留**以便下次重启复用；如需清理可手动删除上述目录。
 
 ## ❓ 常见问题
