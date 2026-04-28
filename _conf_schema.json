@@ -74,7 +74,7 @@
         "description": "启用 TOTP 双因素登录（Google Authenticator）",
         "type": "bool",
         "default": false,
-        "hint": "开启后允许在设置面板「账号安全」分区绑定 6 位动态码二次验证；需要先安装 requirements-totp.txt。"
+        "hint": "开启后允许在设置面板「账号安全」分区绑定 6 位动态码二次验证"
       },
       "totp_issuer": {
         "description": "TOTP 二维码 Issuer",
