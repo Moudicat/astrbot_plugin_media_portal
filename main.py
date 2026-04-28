@@ -67,7 +67,7 @@ class _AstrbotDependencyInstaller:
     "media_portal",
     "moudicat",
     "多媒体存储/检索/WebUI 管理插件，支持 AI 工具调用。",
-    "0.3.1",
+    "0.4.0",
 )
 class MediaPortalPlugin(Star):
     def __init__(self, context: Context, config: dict[str, Any] | None = None):
