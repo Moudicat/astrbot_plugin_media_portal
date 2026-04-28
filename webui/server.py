@@ -2282,6 +2282,13 @@ class WebUIServer:
             _, store = await _require_face_store()
             name = payload.get("name")
             sample = payload.get("sample_face_id")
+            if sample is not None:
+                sample_face = await store.get_face(int(sample))
+                if sample_face is None or int(sample_face.person_id or 0) != int(person_id):
+                    raise HTTPException(
+                        status.HTTP_400_BAD_REQUEST,
+                        detail="封面人脸不属于该角色",
+                    )
             await store.update_person(
                 person_id,
                 name=str(name) if name is not None else None,
@@ -2381,6 +2388,24 @@ class WebUIServer:
             valid = await _list_valid_media_ids()
             removed = await manager.cleanup_face_orphans(valid)
             return {"removed": int(removed)}
+
+        @self._app.post("/api/intelligence/face/clear")
+        async def intel_face_clear_all(
+            token: str = Depends(self._auth_dependency()),
+        ) -> dict[str, Any]:
+            """删除所有人脸数据（高危操作）。
+
+            会清空 ``face_records`` / ``face_persons`` / ``face_scans`` 三张表，
+            并删除 ``face_thumbs`` 目录下的所有缩略图文件。
+            """
+            _ = token
+            manager = _require_intelligence()
+            summary = await manager.clear_all_face_data()
+            return {
+                "face_count": int(summary.get("face_count", 0)),
+                "person_count": int(summary.get("person_count", 0)),
+                "thumbs_removed": int(summary.get("thumbs_removed", 0)),
+            }
 
         @self._app.post("/api/intelligence/face/prune")
         async def intel_face_prune(

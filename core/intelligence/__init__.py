@@ -20,6 +20,7 @@ from .manager import (
     DependencyInstaller,
     IntelligenceManager,
     ModelSnapshot,
+    attach_auto_scan_post_save,
 )
 from .models import ModelFile, ModelSpec
 from .registry import (
@@ -45,5 +46,6 @@ __all__ = [
     "ModelSnapshot",
     "ModelSpec",
     "ModelStatus",
+    "attach_auto_scan_post_save",
     "get_default_models",
 ]

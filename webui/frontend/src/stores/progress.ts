@@ -63,7 +63,19 @@ export const useProgressStore = defineStore("progress", {
     background: {} as Record<string, BackgroundTaskEntry>,
     _pollTimer: null as ReturnType<typeof setTimeout> | null,
     _polling: false,
+    /** 在 polling 进行中又被 bump，则记下需要再跑一次。 */
+    _needsRepoll: false,
     _started: false,
+    /**
+     * 上一次轮询时观察到的 ``status.stats.last_run_at`` 基线。
+     *
+     * - 取值 ``-1`` 表示「尚未建立基线」（首次轮询用来校准）；
+     * - 当后端的 ``last_run_at`` 比基线增大 → 认为有一次扫描在两次轮询之间完成了，
+     *   此时即使我们没有捕获到 ``scanning=true``，也补造一个 ``done`` 条目让用户感知；
+     * - 当 ``last_run_at`` 变小（如清空人脸数据后）→ 重新建立基线。
+     */
+    _lastClipRunAt: -1 as number,
+    _lastFaceRunAt: -1 as number,
   }),
   getters: {
     backgroundTasks(state): ProgressTask[] {
@@ -102,6 +114,8 @@ export const useProgressStore = defineStore("progress", {
         }
       }
       this.background = {};
+      this._lastClipRunAt = -1;
+      this._lastFaceRunAt = -1;
     },
     scheduleNext(delay: number) {
       if (!this._started) return;
@@ -120,38 +134,73 @@ export const useProgressStore = defineStore("progress", {
     bump() {
       this.scheduleNext(80);
     },
+    /**
+     * 乐观地在进度条里立刻插入一个"扫描进行中"的占位任务。
+     *
+     * 用于在用户点击「扫描」后立即给到反馈，避免出现以下场景：
+     *   - 后端扫描秒级完成（无新增图片）→ 下次轮询拉到 scanning=false → 进度条永远不出现；
+     *   - 第一次轮询命中 polling 进行中 → 直到 3.5s 后才更新 → 中间出现感知盲区。
+     *
+     * 调用后下一次轮询会按真实状态把它纠正为运行中或 done。
+     */
+    markScanRunning(kind: "clip-scan" | "face-scan") {
+      const meta: ProgressTaskMeta =
+        kind === "face-scan"
+          ? { mediaProcessed: 0, facesIndexed: 0 }
+          : { indexed: 0, failed: 0 };
+      this.upsertBg({
+        id: kind,
+        kind,
+        percent: 0,
+        indeterminate: true,
+        status: "running",
+        finishedAt: null,
+        cancel: null,
+        meta,
+      });
+    },
     async pollOnce() {
-      if (this._polling) return;
+      if (this._polling) {
+        // 当前正在拉数据，记下"还需要再跑一次"，让本次完成后立刻补一次。
+        this._needsRepoll = true;
+        return;
+      }
       this._polling = true;
       try {
-        const list = await intelligenceApi.listModels().catch(() => null);
-        if (!list || !list.feature_enabled) {
-          this.purgeKinds(["model-download", "model-deps", "clip-scan", "face-scan"]);
-          return;
-        }
-        for (const model of list.models || []) {
-          this.applyModelSnapshot(model);
-        }
-        const clipModelReady = (list.models || []).some(
-          (m) => m.capability === "clip" && m.status === "ready",
-        );
-        const faceModelReady = (list.models || []).some(
-          (m) => m.capability === "face" && m.status === "ready",
-        );
-        if (list.clip_enabled && clipModelReady) {
-          const status = await intelligenceApi.clipStatus().catch(() => null);
-          this.applyClipStatus(status);
-        } else {
-          this.dropById("clip-scan", true);
-        }
-        if (list.face_enabled && faceModelReady) {
-          const status = await intelligenceApi.faceStatus().catch(() => null);
-          this.applyFaceStatus(status);
-        } else {
-          this.dropById("face-scan", true);
-        }
+        do {
+          this._needsRepoll = false;
+          await this._runPollCycle();
+        } while (this._needsRepoll);
       } finally {
         this._polling = false;
+      }
+    },
+    async _runPollCycle() {
+      const list = await intelligenceApi.listModels().catch(() => null);
+      if (!list || !list.feature_enabled) {
+        this.purgeKinds(["model-download", "model-deps", "clip-scan", "face-scan"]);
+        return;
+      }
+      for (const model of list.models || []) {
+        this.applyModelSnapshot(model);
+      }
+      const clipModelReady = (list.models || []).some(
+        (m) => m.capability === "clip" && m.status === "ready",
+      );
+      const faceModelReady = (list.models || []).some(
+        (m) => m.capability === "face" && m.status === "ready",
+      );
+      if (list.clip_enabled && clipModelReady) {
+        const status = await intelligenceApi.clipStatus().catch(() => null);
+        this.applyClipStatus(status);
+      } else {
+        this.dropById("clip-scan", true);
+      }
+      if (list.face_enabled && faceModelReady) {
+        const status = await intelligenceApi.faceStatus().catch(() => null);
+        this.applyFaceStatus(status);
+      } else {
+        this.dropById("face-scan", true);
       }
     },
     applyModelSnapshot(model: ModelSnapshot) {
@@ -223,6 +272,7 @@ export const useProgressStore = defineStore("progress", {
         this.dropById(id, true);
         return;
       }
+      const lastRunAt = Number(status.stats?.last_run_at || 0);
       if (status.scanning) {
         this.upsertBg({
           id,
@@ -237,13 +287,50 @@ export const useProgressStore = defineStore("progress", {
             failed: status.stats?.failed || 0,
           },
         });
-      } else {
-        const errMsg = status.stats?.last_error;
+        return;
+      }
+      const errMsg = status.stats?.last_error;
+      const entry = this.background[id];
+      if (entry) {
+        // 既有条目（之前观察到 running 或乐观插入），直接转为终止态。
+        // ``finishById`` 内部对幂等调用做了去抖，不会反复重置 finishedAt。
         this.finishById(id, errMsg ? "error" : "done", {
           indexed: status.indexed_count,
           failed: status.stats?.failed || 0,
           errorMessage: errMsg || undefined,
         });
+        this._lastClipRunAt = lastRunAt;
+        return;
+      }
+      if (this._lastClipRunAt < 0) {
+        // 首次轮询：建立基线，但不补造 done，避免页面打开就误显示一次"已完成"。
+        this._lastClipRunAt = lastRunAt;
+        return;
+      }
+      if (lastRunAt > this._lastClipRunAt) {
+        // 两次轮询之间已经跑完一轮扫描（典型场景：上传后后端自动扫描秒级完成）。
+        // 先放一个 running 占位，再立刻 finish，让用户在进度中心看到一次完成提示。
+        this.upsertBg({
+          id,
+          kind: "clip-scan",
+          percent: 0,
+          indeterminate: false,
+          status: "running",
+          finishedAt: null,
+          cancel: null,
+          meta: {
+            indexed: status.stats?.indexed || 0,
+            failed: status.stats?.failed || 0,
+          },
+        });
+        this.finishById(id, errMsg ? "error" : "done", {
+          indexed: status.indexed_count,
+          failed: status.stats?.failed || 0,
+          errorMessage: errMsg || undefined,
+        });
+        this._lastClipRunAt = lastRunAt;
+      } else if (lastRunAt < this._lastClipRunAt) {
+        this._lastClipRunAt = lastRunAt;
       }
     },
     applyFaceStatus(status: FaceStatusResp | null) {
@@ -252,6 +339,7 @@ export const useProgressStore = defineStore("progress", {
         this.dropById(id, true);
         return;
       }
+      const lastRunAt = Number(status.stats?.last_run_at || 0);
       if (status.scanning) {
         this.upsertBg({
           id,
@@ -266,13 +354,45 @@ export const useProgressStore = defineStore("progress", {
             facesIndexed: status.stats?.faces_indexed || 0,
           },
         });
-      } else {
-        const errMsg = status.stats?.last_error;
+        return;
+      }
+      const errMsg = status.stats?.last_error;
+      const entry = this.background[id];
+      if (entry) {
         this.finishById(id, errMsg ? "error" : "done", {
           faceCount: status.face_count,
           personCount: status.person_count,
           errorMessage: errMsg || undefined,
         });
+        this._lastFaceRunAt = lastRunAt;
+        return;
+      }
+      if (this._lastFaceRunAt < 0) {
+        this._lastFaceRunAt = lastRunAt;
+        return;
+      }
+      if (lastRunAt > this._lastFaceRunAt) {
+        this.upsertBg({
+          id,
+          kind: "face-scan",
+          percent: 0,
+          indeterminate: false,
+          status: "running",
+          finishedAt: null,
+          cancel: null,
+          meta: {
+            mediaProcessed: status.stats?.media_processed || 0,
+            facesIndexed: status.stats?.faces_indexed || 0,
+          },
+        });
+        this.finishById(id, errMsg ? "error" : "done", {
+          faceCount: status.face_count,
+          personCount: status.person_count,
+          errorMessage: errMsg || undefined,
+        });
+        this._lastFaceRunAt = lastRunAt;
+      } else if (lastRunAt < this._lastFaceRunAt) {
+        this._lastFaceRunAt = lastRunAt;
       }
     },
     upsertBg(task: ProgressTask) {
@@ -293,22 +413,39 @@ export const useProgressStore = defineStore("progress", {
     ) {
       const entry = this.background[id];
       if (!entry) return;
+      // 当后端反复返回相同的"已完成"快照时，``applyXxxStatus`` 会反复调用 finishById；
+      // 此处保留首次进入终止态时的 finishedAt 与 pruneTimer，避免每次轮询都把
+      // "完成倒计时"重置成 6s，导致条目永远无法自动消失。
+      const isIdempotent =
+        entry.task.status === status && entry.task.finishedAt !== null;
+      const finishedAt = isIdempotent
+        ? entry.task.finishedAt
+        : Date.now();
+
+      let pruneTimer = entry.pruneTimer;
+      if (!isIdempotent) {
+        if (pruneTimer) clearTimeout(pruneTimer);
+        pruneTimer = setTimeout(() => {
+          const cur = this.background[id];
+          if (!cur) return;
+          if (
+            cur.task.finishedAt &&
+            Date.now() - cur.task.finishedAt >= FINISHED_LINGER_MS
+          ) {
+            this.dropById(id, false);
+          }
+        }, FINISHED_LINGER_MS + 80);
+      }
+
       const updated: ProgressTask = {
         ...entry.task,
         status,
-        finishedAt: Date.now(),
+        finishedAt,
         cancel: null,
         indeterminate: false,
         percent: status === "done" ? 100 : entry.task.percent,
         meta: { ...entry.task.meta, ...metaPatch },
       };
-      const pruneTimer = setTimeout(() => {
-        const cur = this.background[id];
-        if (!cur) return;
-        if (cur.task.finishedAt && Date.now() - cur.task.finishedAt >= FINISHED_LINGER_MS) {
-          this.dropById(id, false);
-        }
-      }, FINISHED_LINGER_MS + 80);
       this.background = {
         ...this.background,
         [id]: { task: updated, pruneTimer },

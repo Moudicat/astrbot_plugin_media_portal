@@ -101,6 +101,16 @@ class FaceIndexWorker:
     def stats(self) -> FaceWorkerStats:
         return self._stats
 
+    def reset_stats(self) -> None:
+        """清空 worker 的运行统计与「失败 media」缓存。
+
+        用于"删除全部人脸数据"等需要让 worker 回到初始状态的场景：
+          - 重置 stats，``last_run_at`` 等历史信息一并清除；
+          - 清空 ``_failed_media_ids`` 缓存，下一次扫描会重新尝试这些文件。
+        """
+        self._failed_media_ids.clear()
+        self._stats = FaceWorkerStats(failed_media_ids=self._failed_media_ids)
+
     async def run_full_scan(self) -> FaceWorkerStats:
         async with self._running_lock:
             self._stats = FaceWorkerStats(failed_media_ids=self._failed_media_ids)

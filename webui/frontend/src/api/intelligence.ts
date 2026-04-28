@@ -226,6 +226,14 @@ export const intelligenceApi = {
         body: { name, sample_face_id: sampleFaceId },
       },
     ),
+  facePersonSetCover: (personId: number, faceId: number) =>
+    request<{ person: FacePerson | null }>(
+      `/api/intelligence/face/persons/${personId}`,
+      {
+        method: "PATCH",
+        body: { sample_face_id: faceId },
+      },
+    ),
   facePersonsMerge: (targetId: number, sourceIds: number[]) =>
     request<{ merged: boolean; moved_faces: number }>(
       `/api/intelligence/face/persons/merge`,
@@ -255,6 +263,12 @@ export const intelligenceApi = {
     request<{ removed: number }>("/api/intelligence/face/cleanup", {
       method: "POST",
     }),
+  faceClearAll: () =>
+    request<{
+      face_count: number;
+      person_count: number;
+      thumbs_removed: number;
+    }>("/api/intelligence/face/clear", { method: "POST" }),
   faceRebuildThumbs: () =>
     request<{ processed: number; failed: number }>(
       "/api/intelligence/face/thumbs/rebuild",

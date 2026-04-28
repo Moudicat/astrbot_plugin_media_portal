@@ -84,7 +84,10 @@
                   v-for="face in faces"
                   :key="face.id"
                   class="face-cell"
-                  :class="{ active: selectedFaceIds.has(face.id) }"
+                  :class="{
+                    active: selectedFaceIds.has(face.id),
+                    cover: person.sample_face_id === face.id,
+                  }"
                   :title="$t('face.drawer.previewHint')"
                   @click="onCellClick(face)"
                 >
@@ -111,6 +114,33 @@
                     @click.stop="toggleFace(face.id)"
                   >
                     <Icon name="check" :size="12" />
+                  </button>
+                  <button
+                    class="plain face-cell-cover"
+                    type="button"
+                    :class="{ on: person.sample_face_id === face.id }"
+                    :disabled="
+                      coverPendingFaceId === face.id ||
+                      person.sample_face_id === face.id
+                    "
+                    :title="
+                      person.sample_face_id === face.id
+                        ? $t('face.drawer.currentCover')
+                        : $t('face.drawer.setCover')
+                    "
+                    @click.stop="setCover(face.id)"
+                  >
+                    <Icon
+                      :name="person.sample_face_id === face.id ? 'check-circle' : 'image'"
+                      :size="12"
+                    />
+                    <span>
+                      {{
+                        person.sample_face_id === face.id
+                          ? $t("face.drawer.currentCover")
+                          : $t("face.drawer.setCover")
+                      }}
+                    </span>
                   </button>
                   <span class="face-cell-zoom" aria-hidden="true">
                     <Icon name="zoom-in" :size="14" />
@@ -139,6 +169,7 @@ interface Props {
   person: FacePerson | null;
   faces: FaceItem[];
   readonlyToken?: string;
+  coverPendingFaceId?: number | null;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -146,6 +177,7 @@ const props = withDefaults(defineProps<Props>(), {
   person: null,
   faces: () => [],
   readonlyToken: "",
+  coverPendingFaceId: null,
 });
 
 const emit = defineEmits<{
@@ -156,6 +188,7 @@ const emit = defineEmits<{
   (e: "merge-into", payload: { sourceId: number; targetId: number }): void;
   (e: "refresh"): void;
   (e: "preview-media", face: FaceItem): void;
+  (e: "set-cover", payload: { personId: number; faceId: number }): void;
 }>();
 
 const renameDraft = ref("");
@@ -231,6 +264,12 @@ function commitSplit() {
   });
   selectedFaceIds.value = new Set();
 }
+
+function setCover(faceId: number) {
+  if (!props.person) return;
+  if (props.person.sample_face_id === faceId) return;
+  emit("set-cover", { personId: props.person.id, faceId });
+}
 </script>
 
 <style scoped>
@@ -247,15 +286,22 @@ function commitSplit() {
   align-items: center;
 }
 .face-summary-thumb {
-  width: 72px;
-  height: 72px;
-  border-radius: 8px;
+  width: 82px;
+  height: 82px;
+  border-radius: 18px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--muted) 8%, transparent);
+  background:
+    radial-gradient(
+      circle at 45% 28%,
+      color-mix(in srgb, var(--primary) 22%, transparent),
+      color-mix(in srgb, var(--muted) 10%, transparent) 72%
+    );
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--line));
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .face-summary-thumb img {
   width: 100%;
@@ -303,27 +349,30 @@ function commitSplit() {
 
 .face-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 10px;
 }
 .face-cell {
   position: relative;
-  border-radius: 8px;
+  border-radius: 14px;
   overflow: hidden;
   cursor: pointer;
   background: var(--surface);
   border: 1px solid var(--line);
-  transition: border-color 0.12s ease, transform 0.12s ease,
-    box-shadow 0.12s ease;
+  transition: border-color 0.14s ease, transform 0.14s ease,
+    box-shadow 0.14s ease;
 }
 .face-cell:hover {
   border-color: color-mix(in srgb, var(--primary) 30%, var(--line));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.1);
 }
 .face-cell.active {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 25%, transparent);
+}
+.face-cell.cover {
+  border-color: color-mix(in srgb, var(--primary) 72%, var(--line));
 }
 .face-cell img {
   width: 100%;
@@ -338,8 +387,10 @@ function commitSplit() {
 .face-cell-meta {
   display: flex;
   flex-direction: column;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 7px 8px 8px;
   font-size: 11px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
 }
 .face-cell-meta .ellipsis {
   white-space: nowrap;
@@ -390,7 +441,7 @@ function commitSplit() {
 }
 .face-cell-zoom {
   position: absolute;
-  bottom: 26px;
+  bottom: 34px;
   right: 6px;
   width: 22px;
   height: 22px;
@@ -409,5 +460,53 @@ function commitSplit() {
 }
 .face-cell:hover .face-cell-zoom {
   opacity: 1;
+}
+.face-cell-cover {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  max-width: calc(100% - 40px);
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  background: rgba(15, 23, 42, 0.54);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(2px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  z-index: 2;
+}
+.face-cell-cover span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.face-cell:hover .face-cell-cover,
+.face-cell-cover.on {
+  opacity: 1;
+  transform: translateY(0);
+}
+.face-cell-cover:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.72);
+}
+.face-cell-cover.on {
+  border-color: color-mix(in srgb, var(--primary) 70%, #fff);
+  background: color-mix(in srgb, var(--primary) 86%, rgba(15, 23, 42, 0.54));
+}
+.face-cell-cover:disabled {
+  cursor: default;
+}
+.face-cell-cover :deep(svg) {
+  flex: none;
 }
 </style>

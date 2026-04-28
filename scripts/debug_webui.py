@@ -145,6 +145,7 @@ from astrbot_plugin_media_portal.core import (  # noqa: E402  (必须后置)
 )
 from astrbot_plugin_media_portal.core.intelligence import (  # noqa: E402
     IntelligenceManager,
+    attach_auto_scan_post_save,
 )
 from astrbot_plugin_media_portal.webui import WebUIServer  # noqa: E402
 
@@ -280,9 +281,20 @@ def _build_server(
     return server, media_manager, intelligence_manager
 
 
-async def _prepare_server(media_manager: MediaManager) -> None:
+async def _prepare_server(
+    media_manager: MediaManager,
+    intelligence_manager: IntelligenceManager | None = None,
+) -> None:
     await media_manager.initialize()
     await media_manager.ensure_scanned()
+    # 让"上传/恢复后自动触发 CLIP / 人脸扫描"的钩子在调试模式下也生效。
+    # 否则 ``main.py`` 里注册的 post_save 回调不会出现在 debug_webui 路径里，
+    # 上传图片时进度条永远看不到扫描在跑。
+    if intelligence_manager is not None:
+        attach_auto_scan_post_save(
+            media_manager=media_manager,
+            intelligence_manager=intelligence_manager,
+        )
 
 
 def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
@@ -331,7 +343,7 @@ def _print_banner(server: WebUIServer, args: argparse.Namespace) -> None:
 
 async def _run_forever(args: argparse.Namespace) -> None:
     server, media_manager, intelligence_manager = _build_server(args)
-    await _prepare_server(media_manager)
+    await _prepare_server(media_manager, intelligence_manager)
     _print_banner(server, args)
     await server.start()
     stop_event = asyncio.Event()
@@ -388,7 +400,7 @@ def create_app():
     @contextlib.asynccontextmanager
     async def _lifespan(_app):
         async with previous_lifespan(_app):
-            await _prepare_server(media_manager)
+            await _prepare_server(media_manager, intelligence_manager)
             server._cleanup_task = asyncio.create_task(server._periodic_cleanup())
             try:
                 yield

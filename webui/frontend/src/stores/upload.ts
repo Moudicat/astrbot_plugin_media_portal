@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import type { UploadJob } from "@/api/types";
 import { useAuthStore } from "./auth";
+import { useProgressStore } from "./progress";
 
 type RefreshCallback = () => void;
 
@@ -121,6 +122,15 @@ export const useUploadStore = defineStore("upload", {
           }
           if (savedList.length || errorsList.length) {
             this.scheduleRefresh();
+          }
+          if (savedList.length) {
+            // 上传成功后让进度中心立刻轮询一次，确保后端自动触发的
+            // CLIP / 人脸扫描能尽快出现在进度条里——尤其是秒级完成的扫描。
+            try {
+              useProgressStore().bump();
+            } catch (_e) {
+              // store 还没初始化时忽略；此时进度中心也尚未挂载。
+            }
           }
         } else {
           let detail = "上传失败";

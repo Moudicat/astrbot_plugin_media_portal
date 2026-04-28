@@ -49,15 +49,11 @@ export const useMediaStore = defineStore("media", {
     async fetchList() {
       this.loading = true;
       try {
-        if (this.filters.searchMode === "clip") {
-          const text = (this.filters.query || "").trim();
-          if (!text) {
-            this.items = [];
-            this.pagination.total = 0;
-            this.pagination.totalPages = 0;
-            return;
-          }
-          const data = await intelligenceApi.clipSearch(text, CLIP_DEFAULT_TOP_K);
+        const isClipMode = this.filters.searchMode === "clip";
+        const clipText = isClipMode ? (this.filters.query || "").trim() : "";
+
+        if (isClipMode && clipText) {
+          const data = await intelligenceApi.clipSearch(clipText, CLIP_DEFAULT_TOP_K);
           const results = (data.results || []).map((r) => ({
             id: r.id,
             filename: r.filename,
@@ -78,10 +74,11 @@ export const useMediaStore = defineStore("media", {
           return;
         }
 
+        // 文本模式，或 clip 模式但还没输入查询词时，统一展示默认列表（按当前分类/类型过滤）。
         const data = await mediaApi.list({
           category: this.filters.category,
           kind: this.filters.kind,
-          query: this.filters.query,
+          query: isClipMode ? "" : this.filters.query,
           page: this.filters.page,
           page_size: this.filters.page_size,
         });

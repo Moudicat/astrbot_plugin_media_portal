@@ -669,6 +669,30 @@ class FaceIndexStore:
             row = await cursor.fetchone()
             return int(row["c"]) if row else 0
 
+    async def clear_all(self) -> dict[str, int]:
+        """清空 ``face_records`` / ``face_persons`` / ``face_scans`` 三张表。
+
+        返回 ``{"face_count": 被清理人脸数, "person_count": 被清理角色数}``，
+        便于上层做日志/反馈。
+        """
+        async with self._lock:
+            assert self._conn is not None
+            cursor = await self._conn.execute(
+                "SELECT COUNT(1) AS c FROM face_records"
+            )
+            row = await cursor.fetchone()
+            face_count = int(row["c"]) if row else 0
+            cursor = await self._conn.execute(
+                "SELECT COUNT(1) AS c FROM face_persons"
+            )
+            row = await cursor.fetchone()
+            person_count = int(row["c"]) if row else 0
+            await self._conn.execute("DELETE FROM face_records")
+            await self._conn.execute("DELETE FROM face_persons")
+            await self._conn.execute("DELETE FROM face_scans")
+            await self._conn.commit()
+        return {"face_count": face_count, "person_count": person_count}
+
     # ----- meta -----
 
     async def set_meta(self, key: str, value: str) -> None:

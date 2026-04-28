@@ -7,6 +7,36 @@
           <span>{{ $t("face.title") }}</span>
         </h2>
         <p class="muted">{{ $t("face.subtitle") }}</p>
+        <div v-if="faceFeatureEnabled" class="faces-toolbar-metrics">
+          <span class="metric-tag">
+            <span>{{ $t("face.statPersons") }}</span>
+            <strong>{{ statusInfo.person_count }}</strong>
+          </span>
+          <span class="metric-tag">
+            <span>{{ $t("face.statFaces") }}</span>
+            <strong>{{ statusInfo.face_count }}</strong>
+          </span>
+          <span class="metric-tag">
+            <span>{{ $t("face.statLastRun") }}</span>
+            <strong>{{ formatTime(statusInfo.stats.last_run_at) }}</strong>
+          </span>
+          <span
+            :class="[
+              'metric-tag',
+              'engine',
+              statusInfo.engine_ready ? 'on' : 'off',
+            ]"
+          >
+            <span>{{ $t("face.statEngine") }}</span>
+            <strong>
+              {{
+                statusInfo.engine_ready
+                  ? $t("face.engineReady")
+                  : $t("face.engineNotReady")
+              }}
+            </strong>
+          </span>
+        </div>
       </div>
       <div class="faces-toolbar-actions">
         <button
@@ -17,6 +47,20 @@
         >
           <Icon name="trash" :size="14" />
           <span>{{ $t("face.cleanupOrphans") }}</span>
+        </button>
+        <button
+          class="danger sm"
+          :disabled="
+            clearAllPending ||
+            !faceFeatureEnabled ||
+            scanPending ||
+            statusInfo.scanning
+          "
+          :title="$t('face.clearAllHint')"
+          @click="onClearAll"
+        >
+          <Icon name="trash-2" :size="14" />
+          <span>{{ $t("face.clearAll") }}</span>
         </button>
         <button
           class="ghost sm"
@@ -55,35 +99,6 @@
     </section>
 
     <template v-else>
-      <section class="faces-stats">
-        <div class="stat">
-          <div class="stat-label">{{ $t("face.statPersons") }}</div>
-          <div class="stat-value">{{ statusInfo.person_count }}</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">{{ $t("face.statFaces") }}</div>
-          <div class="stat-value">{{ statusInfo.face_count }}</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">{{ $t("face.statLastRun") }}</div>
-          <div class="stat-value">
-            {{ formatTime(statusInfo.stats.last_run_at) }}
-          </div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">{{ $t("face.statEngine") }}</div>
-          <div class="stat-value">
-            <span :class="['pill', statusInfo.engine_ready ? 'on' : 'off']">
-              {{
-                statusInfo.engine_ready
-                  ? $t("face.engineReady")
-                  : $t("face.engineNotReady")
-              }}
-            </span>
-          </div>
-        </div>
-      </section>
-
       <section v-if="statusInfo.stats.last_error" class="faces-warning">
         <Icon name="info" :size="14" />
         <span>{{ statusInfo.stats.last_error }}</span>
@@ -121,7 +136,7 @@
               :aria-pressed="selectedIds.has(person.id) ? 'true' : 'false'"
               @click.stop="toggleSelect(person.id)"
             >
-              <Icon name="check" :size="14" />
+              <Icon name="check" :size="12" />
             </button>
             <span class="face-card-badge">
               {{ $t("face.faceCount", { count: person.face_count }) }}
@@ -172,6 +187,7 @@
       :person="drawerPerson"
       :faces="drawerFaces"
       :readonly-token="auth.readonlyToken"
+      :cover-pending-face-id="coverPendingFaceId"
       @close="drawerVisible = false"
       @rename="onRename"
       @delete="onDelete"
@@ -179,6 +195,7 @@
       @merge-into="onMergeInto"
       @refresh="reloadAfterChange"
       @preview-media="onPreviewFromFace"
+      @set-cover="onSetCover"
     />
 
     <PlayerModal
@@ -238,7 +255,9 @@ const scanPending = ref(false);
 const reclusterPending = ref(false);
 const cleanupPending = ref(false);
 const rebuildPending = ref(false);
+const clearAllPending = ref(false);
 const loading = ref(false);
+const coverPendingFaceId = ref<number | null>(null);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 const faceFeatureEnabled = computed(() => config.canFaceBrowse);
@@ -314,8 +333,14 @@ async function onScan() {
   if (!canScan.value) return;
   scanPending.value = true;
   try {
-    await intelligenceApi.faceScan();
-    toast.push(t("face.scanQueued"), "success");
+    const result = await intelligenceApi.faceScan();
+    if (result.started) {
+      toast.push(t("face.scanQueued"), "success");
+      // 乐观插入运行任务，避免扫描秒级完成时用户看不到任何进度反馈。
+      progressStore.markScanRunning("face-scan");
+    } else {
+      toast.push(t("face.scanBusy"), "info");
+    }
     progressStore.bump();
     await refreshStatus();
   } catch (error) {
@@ -347,6 +372,37 @@ async function onCleanupOrphans() {
     toast.push((error as Error).message, "error");
   } finally {
     cleanupPending.value = false;
+  }
+}
+
+async function onClearAll() {
+  if (!faceFeatureEnabled.value) return;
+  const ok = await confirm.confirm({
+    title: t("face.clearAllTitle"),
+    message: t("face.clearAllConfirm"),
+    confirmText: t("face.clearAllBtn"),
+    tone: "danger",
+    icon: "trash-2",
+  });
+  if (!ok) return;
+  clearAllPending.value = true;
+  try {
+    const result = await intelligenceApi.faceClearAll();
+    toast.push(
+      t("face.clearAllDone", {
+        faces: result.face_count,
+        persons: result.person_count,
+      }),
+      "success",
+    );
+    selectedIds.value.clear();
+    selectedId.value = null;
+    progressStore.bump();
+    await reloadAfterChange();
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  } finally {
+    clearAllPending.value = false;
   }
 }
 
@@ -545,6 +601,35 @@ async function onRename(payload: { id: number; name: string }) {
   }
 }
 
+function replacePerson(nextPerson: FacePerson) {
+  persons.value = persons.value.map((person) =>
+    person.id === nextPerson.id ? nextPerson : person,
+  );
+  if (drawerPerson.value?.id === nextPerson.id) {
+    drawerPerson.value = nextPerson;
+  }
+}
+
+async function onSetCover(payload: { personId: number; faceId: number }) {
+  coverPendingFaceId.value = payload.faceId;
+  try {
+    const result = await intelligenceApi.facePersonSetCover(
+      payload.personId,
+      payload.faceId,
+    );
+    if (result.person) {
+      replacePerson(result.person);
+    } else {
+      await reloadAfterChange();
+    }
+    toast.push(t("face.coverDone"), "success");
+  } catch (error) {
+    toast.push((error as Error).message, "error");
+  } finally {
+    coverPendingFaceId.value = null;
+  }
+}
+
 async function onDelete(personId: number) {
   const ok = await confirm.confirm({
     title: t("face.deletePersonTitle"),
@@ -659,32 +744,60 @@ onBeforeUnmount(() => {
 .faces-view {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 18px 20px 80px;
+  gap: 20px;
+  padding: 20px 22px 88px;
 }
 
 .faces-toolbar {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
+  gap: 18px;
   align-items: flex-end;
   justify-content: space-between;
-  padding: 16px 18px;
-  border-radius: 14px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--primary) 8%, var(--surface)) 0%,
-    var(--surface) 60%
-  );
-  border: 1px solid var(--line);
+  padding: 22px 24px;
+  border-radius: 24px;
+  background:
+    radial-gradient(
+      circle at 10% 0%,
+      color-mix(in srgb, var(--primary) 24%, transparent),
+      transparent 30%
+    ),
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--primary) 12%, var(--surface)) 0%,
+      color-mix(in srgb, var(--surface) 96%, #fff) 58%,
+      var(--surface) 100%
+    );
+  border: 1px solid color-mix(in srgb, var(--primary) 16%, var(--line));
+  overflow: hidden;
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.faces-toolbar::after {
+  content: "";
+  position: absolute;
+  width: 180px;
+  height: 180px;
+  right: -54px;
+  top: -68px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  pointer-events: none;
+}
+.faces-toolbar-info,
+.faces-toolbar-actions {
+  position: relative;
+  z-index: 1;
 }
 .faces-toolbar-info h2 {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 6px;
-  font-size: 20px;
-  font-weight: 600;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 24px;
+  font-weight: 700;
   color: var(--text);
 }
 .faces-toolbar-info h2 :deep(svg) {
@@ -692,58 +805,55 @@ onBeforeUnmount(() => {
 }
 .faces-toolbar-info p {
   margin: 0;
-  font-size: 13px;
+  max-width: 560px;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.faces-toolbar-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.metric-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--primary));
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.metric-tag strong {
+  max-width: 190px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.metric-tag.engine.on {
+  border-color: color-mix(in srgb, var(--success, #4ade80) 34%, var(--line));
+  background: color-mix(in srgb, var(--success, #4ade80) 12%, transparent);
+}
+.metric-tag.engine.on strong {
+  color: color-mix(in srgb, var(--success, #4ade80) 88%, var(--text));
+}
+.metric-tag.engine.off {
+  opacity: 0.78;
 }
 .faces-toolbar-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   align-items: center;
-}
-
-.faces-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-}
-.stat {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  transition: border-color 0.15s ease;
-}
-.stat:hover {
-  border-color: color-mix(in srgb, var(--primary) 25%, var(--line));
-}
-.stat-label {
-  font-size: 12px;
-  color: var(--muted);
-  letter-spacing: 0.02em;
-}
-.stat-value {
-  font-size: 20px;
-  font-weight: 600;
-  word-break: break-all;
-}
-.pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-}
-.pill.on {
-  background: color-mix(in srgb, var(--success, #4ade80) 18%, transparent);
-  color: color-mix(in srgb, var(--success, #4ade80) 90%, var(--text));
-}
-.pill.off {
-  background: color-mix(in srgb, var(--muted) 18%, transparent);
-  color: var(--muted);
 }
 
 .faces-warning {
@@ -760,28 +870,38 @@ onBeforeUnmount(() => {
 
 .faces-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 18px;
 }
 
 .face-card {
   position: relative;
-  border-radius: 14px;
+  border-radius: 22px;
   overflow: hidden;
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  transition: transform 0.15s ease, border-color 0.15s ease,
-    box-shadow 0.15s ease;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface) 97%, #fff),
+      var(--surface)
+    );
+  border: 1px solid color-mix(in srgb, var(--line) 88%, var(--primary));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 0.18s ease, border-color 0.18s ease,
+    box-shadow 0.18s ease;
 }
 .face-card:hover {
   border-color: color-mix(in srgb, var(--primary) 40%, var(--line));
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  transform: translateY(-4px);
+  box-shadow:
+    0 18px 34px rgba(0, 0, 0, 0.12),
+    0 3px 8px rgba(0, 0, 0, 0.06);
 }
 .face-card.active {
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--primary) 24%, transparent),
+    0 14px 30px rgba(0, 0, 0, 0.1);
 }
 .face-card.batch {
   border-color: var(--primary);
@@ -794,14 +914,17 @@ onBeforeUnmount(() => {
 .face-thumb {
   position: relative;
   aspect-ratio: 1;
-  width: 100%;
+  width: calc(100% - 18px);
+  margin: 9px 9px 0;
+  border-radius: 18px;
   background:
     radial-gradient(
       circle at 50% 35%,
-      color-mix(in srgb, var(--primary) 18%, transparent),
-      color-mix(in srgb, var(--muted) 10%, transparent) 70%
+      color-mix(in srgb, var(--primary) 22%, transparent),
+      color-mix(in srgb, var(--muted) 12%, transparent) 72%
     );
   overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .face-thumb img {
   width: 100%;
@@ -811,7 +934,7 @@ onBeforeUnmount(() => {
   transition: transform 0.4s ease;
 }
 .face-card:hover .face-thumb img {
-  transform: scale(1.04);
+  transform: scale(1.05);
 }
 .face-thumb-placeholder {
   width: 100%;
@@ -824,17 +947,17 @@ onBeforeUnmount(() => {
 
 .face-card-check {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
-  min-width: 28px;
+  top: 10px;
+  right: 10px;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  min-width: 26px;
   flex: none;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.85);
-  background: rgba(15, 23, 42, 0.45);
-  color: rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(15, 23, 42, 0.32);
+  color: rgba(255, 255, 255, 0.92);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -843,55 +966,64 @@ onBeforeUnmount(() => {
   margin: 0;
   line-height: 1;
   box-sizing: border-box;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  transition: background 0.15s ease, transform 0.15s ease,
-    border-color 0.15s ease;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: background 0.18s ease, transform 0.18s ease,
+    border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
   z-index: 2;
   opacity: 0;
+  transform: scale(0.92);
 }
 .face-card:hover .face-card-check,
 .face-card.batch .face-card-check,
 .face-card-check.on {
   opacity: 1;
+  transform: scale(1);
+}
+.face-card-check:hover {
+  background: rgba(15, 23, 42, 0.55);
+  border-color: rgba(255, 255, 255, 0.85);
 }
 .face-card-check.on {
   background: var(--primary);
-  border-color: var(--primary);
+  border-color: rgba(255, 255, 255, 0.9);
   color: #fff;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--primary) 45%, transparent);
 }
-.face-card-check:hover {
-  transform: scale(1.08);
+.face-card-check.on:hover {
+  background: color-mix(in srgb, var(--primary) 90%, #fff);
   border-color: #fff;
 }
 .face-card-check :deep(svg) {
   flex: none;
   display: block;
+  stroke-width: 2.5;
 }
 
 .face-card-badge {
   position: absolute;
-  bottom: 8px;
-  left: 8px;
-  padding: 3px 8px;
+  bottom: 10px;
+  left: 10px;
+  padding: 5px 10px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 500;
-  background: rgba(15, 23, 42, 0.6);
+  font-weight: 700;
+  background: rgba(15, 23, 42, 0.62);
   color: #fff;
   backdrop-filter: blur(6px);
 }
 
 .face-card-meta {
-  padding: 10px 12px 12px;
+  padding: 12px 14px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 .face-card-name {
-  font-weight: 500;
-  font-size: 13.5px;
+  font-weight: 650;
+  font-size: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -903,7 +1035,10 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 .face-card-id {
-  font-size: 11.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+  font-size: 11px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
@@ -915,10 +1050,16 @@ onBeforeUnmount(() => {
   gap: 8px;
   align-items: center;
   text-align: center;
-  padding: 40px 16px;
-  border: 1px dashed var(--line);
-  border-radius: 14px;
-  background: var(--surface);
+  padding: 56px 18px;
+  border: 1px dashed color-mix(in srgb, var(--primary) 24%, var(--line));
+  border-radius: 22px;
+  background:
+    radial-gradient(
+      circle at 50% 0%,
+      color-mix(in srgb, var(--primary) 10%, transparent),
+      transparent 42%
+    ),
+    var(--surface);
   color: var(--muted);
 }
 .faces-empty h3 {
@@ -966,5 +1107,41 @@ onBeforeUnmount(() => {
 .batchbar-enter-active,
 .batchbar-leave-active {
   transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+@media (max-width: 720px) {
+  .faces-view {
+    padding: 14px 14px 82px;
+    gap: 16px;
+  }
+  .faces-toolbar {
+    padding: 18px;
+    border-radius: 20px;
+  }
+  .faces-toolbar-actions {
+    width: 100%;
+  }
+  .faces-toolbar-metrics {
+    gap: 6px;
+  }
+  .metric-tag {
+    max-width: 100%;
+  }
+  .metric-tag strong {
+    max-width: 140px;
+  }
+  .faces-toolbar-actions button {
+    flex: 1 1 auto;
+  }
+  .faces-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+  }
+  .faces-batchbar {
+    width: calc(100% - 24px);
+    justify-content: space-between;
+    border-radius: 18px;
+    flex-wrap: wrap;
+  }
 }
 </style>

@@ -1237,6 +1237,15 @@ button.block {
   background: rgba(148, 163, 184, 0.18);
 }
 
+/* 抵消全局 button:active 的 translateY(1px)，
+   保持清除按钮一直处于垂直居中位置，避免点击时跳出鼠标命中区。 */
+.toolbar-search .input-wrap .input-clear,
+.toolbar-search .input-wrap .input-clear:active:not(:disabled),
+.toolbar-search .input-wrap .input-clear:focus,
+.toolbar-search .input-wrap .input-clear:focus-visible {
+  transform: translateY(-50%);
+}
+
 .toolbar-search .input-wrap input[type="search"] {
   padding-right: 34px;
 }

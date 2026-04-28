@@ -29,6 +29,7 @@ from .registry import CLIP_MODEL_KEY, DEFAULT_MODELS, FACE_MODEL_KEY
 
 
 _STATE_FILENAME = "state.json"
+_SETTINGS_FILENAME = "settings.json"
 
 # 通过 ``find_missing`` 探测「已就绪但仍缺 pip 依赖」的结果缓存时长（秒）。
 # 设得太短会让设置页频繁触发依赖检测；设得太长则用户手动 pip install 后看不到效果。
@@ -139,6 +140,61 @@ class ModelSnapshot:
         }
 
 
+def attach_auto_scan_post_save(
+    *,
+    media_manager: Any,
+    intelligence_manager: "IntelligenceManager | None",
+) -> None:
+    """把"上传/恢复媒体后自动触发 CLIP / 人脸扫描"的钩子挂到 ``media_manager``。
+
+    这段逻辑原本只写在插件主入口 ``main.py`` 里，导致 ``scripts/debug_webui.py``
+    单跑时上传图片不会触发任何后台扫描。抽成模块级函数后可以同时在两处复用。
+
+    - 仅对图像类型 (``record.kind == "image"``) 生效；
+    - ``intelligence_manager`` 为 ``None`` 或总开关关闭时静默跳过；
+    - 每个子能力（CLIP / 人脸）独立 try-except，互不影响；
+    - 由 :class:`IntelligenceManager` 内部的 rescan-pending 队列保证：哪怕扫描任务正
+      在跑，也不会丢掉新上传的文件——会在当前扫描结束后自动再补一轮。
+    """
+
+    async def _on_post_save(record: Any, action: str) -> None:
+        if action not in {"created", "restored"}:
+            return
+        kind = getattr(record, "kind", "") or ""
+        if str(kind).lower() != "image":
+            return
+        if intelligence_manager is None or not intelligence_manager.feature_enabled:
+            return
+
+        async def _iter_image_records() -> Any:
+            getter = getattr(media_manager, "list_image_records_minimal", None)
+            if not callable(getter):
+                return []
+            try:
+                return await getter()
+            except Exception:
+                return []
+
+        try:
+            if intelligence_manager.clip_enabled:
+                await intelligence_manager.trigger_clip_scan(
+                    iter_image_records=_iter_image_records
+                )
+        except Exception as exc:
+            logger.debug("自动 CLIP 索引失败: %s", exc)
+        try:
+            if intelligence_manager.face_enabled:
+                await intelligence_manager.trigger_face_scan(
+                    iter_image_records=_iter_image_records
+                )
+        except Exception as exc:
+            logger.debug("自动人脸扫描失败: %s", exc)
+
+    register = getattr(media_manager, "register_post_save_callback", None)
+    if callable(register):
+        register(_on_post_save)
+
+
 class IntelligenceManager:
     """模型管理器。
 
@@ -188,7 +244,8 @@ class IntelligenceManager:
             for key, spec in self._models.items()
         }
         self._lock = asyncio.Lock()
-        self._download_sema = asyncio.Semaphore(max(1, min(3, max_concurrent_downloads)))
+        self._max_concurrent_downloads = max(1, min(3, int(max_concurrent_downloads)))
+        self._download_sema = asyncio.Semaphore(self._max_concurrent_downloads)
         self._engines: dict[str, Any] = {}
         self._downloader = ModelDownloader(
             root_dir=self._models_dir,
@@ -200,6 +257,10 @@ class IntelligenceManager:
         self._clip_store: Any = None  # ClipIndexStore，懒初始化
         self._clip_worker: Any = None  # ClipIndexWorker
         self._clip_scan_task: asyncio.Task[Any] | None = None
+        # 当扫描进行中又被 trigger（典型场景：上传连发），先标记此处，
+        # 等当前扫描结束后再自动补一轮，避免新上传的文件被漏掉。
+        self._clip_rescan_pending: bool = False
+        self._clip_rescan_iter: Any = None
 
         self._face_index_db = (self._intelligence_dir / "face_index.db").resolve()
         self._face_thumb_dir = (self._intelligence_dir / "face_thumbs").resolve()
@@ -208,7 +269,10 @@ class IntelligenceManager:
         self._face_clusterer: Any = None
         self._face_worker: Any = None
         self._face_scan_task: asyncio.Task[Any] | None = None
+        self._face_rescan_pending: bool = False
+        self._face_rescan_iter: Any = None
 
+        self._load_settings_file()
         self._load_state_file()
         self._refresh_disk_status_sync()
 
@@ -346,6 +410,9 @@ class IntelligenceManager:
         if engine is None or store is None:
             return False
         if self._clip_scan_task and not self._clip_scan_task.done():
+            # 当前已在扫描，记下还需要再跑一次（典型场景：上传期间又 push 进新文件）。
+            self._clip_rescan_pending = True
+            self._clip_rescan_iter = iter_image_records
             return False
 
         from .clip import ClipIndexWorker
@@ -361,8 +428,11 @@ class IntelligenceManager:
             # 不同回调时刷新（例如 worker 周期性扫描）
             self._clip_worker._iter_records = iter_image_records  # type: ignore[attr-defined]
 
+        self._clip_rescan_pending = False
+        self._clip_rescan_iter = None
         self._clip_scan_task = asyncio.create_task(
-            self._clip_worker.run_full_scan(), name="clip-index-scan"
+            self._run_clip_scan_with_followup(iter_image_records),
+            name="clip-index-scan",
         )
         if wait:
             try:
@@ -370,6 +440,30 @@ class IntelligenceManager:
             except Exception:  # pragma: no cover
                 logger.exception("CLIP 扫描任务异常")
         return True
+
+    async def _run_clip_scan_with_followup(self, iter_image_records: Any) -> Any:
+        """跑一次 ``run_full_scan``；结束时若有 race 上来的请求则继续补跑。"""
+        try:
+            return await self._clip_worker.run_full_scan()
+        finally:
+            if self._clip_rescan_pending:
+                pending_iter = self._clip_rescan_iter or iter_image_records
+                self._clip_rescan_pending = False
+                self._clip_rescan_iter = None
+
+                async def _follow_up() -> None:
+                    try:
+                        await self.trigger_clip_scan(iter_image_records=pending_iter)
+                    except Exception:  # pragma: no cover
+                        logger.exception("CLIP 跟进扫描失败")
+
+                # 用 create_task 让当前 task 先正常 done，然后再起新任务，
+                # 否则在 finally 里直接 await 会让旧 task 一直挂着。
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:  # pragma: no cover
+                    loop = asyncio.get_event_loop()
+                loop.create_task(_follow_up(), name="clip-index-scan-followup")
 
     async def search_clip_by_text(
         self, text: str, *, top_k: int = 20
@@ -479,6 +573,8 @@ class IntelligenceManager:
         if engine is None or store is None or clusterer is None:
             return False
         if self._face_scan_task and not self._face_scan_task.done():
+            self._face_rescan_pending = True
+            self._face_rescan_iter = iter_image_records
             return False
 
         from .face import FaceIndexWorker
@@ -508,8 +604,11 @@ class IntelligenceManager:
                 min_blur_var=self._face_min_blur_var,
             )
 
+        self._face_rescan_pending = False
+        self._face_rescan_iter = None
         self._face_scan_task = asyncio.create_task(
-            self._face_worker.run_full_scan(), name="face-index-scan"
+            self._run_face_scan_with_followup(iter_image_records),
+            name="face-index-scan",
         )
         if wait:
             try:
@@ -517,6 +616,28 @@ class IntelligenceManager:
             except Exception:  # pragma: no cover
                 logger.exception("人脸扫描任务异常")
         return True
+
+    async def _run_face_scan_with_followup(self, iter_image_records: Any) -> Any:
+        """跑一次人脸 ``run_full_scan``；结束时若有 race 请求则继续补跑。"""
+        try:
+            return await self._face_worker.run_full_scan()
+        finally:
+            if self._face_rescan_pending:
+                pending_iter = self._face_rescan_iter or iter_image_records
+                self._face_rescan_pending = False
+                self._face_rescan_iter = None
+
+                async def _follow_up() -> None:
+                    try:
+                        await self.trigger_face_scan(iter_image_records=pending_iter)
+                    except Exception:  # pragma: no cover
+                        logger.exception("人脸跟进扫描失败")
+
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:  # pragma: no cover
+                    loop = asyncio.get_event_loop()
+                loop.create_task(_follow_up(), name="face-index-scan-followup")
 
     @property
     def face_thumb_dir(self) -> Path:
@@ -635,6 +756,66 @@ class IntelligenceManager:
                 "min_blur_var": float(blur),
             },
         }
+
+    async def clear_all_face_data(self) -> dict[str, int]:
+        """删除所有已识别的人脸数据。
+
+        覆盖范围：
+          - ``face_records`` / ``face_persons`` / ``face_scans`` 三张索引表；
+          - ``face_thumbs`` 目录下所有人脸缩略图文件；
+          - ``FaceIndexWorker`` 内部 stats（``last_run_at``、``failed_media_ids`` 等）。
+
+        如果当前正在扫描，会等待扫描结束（让 worker 持有的运行状态先释放）。
+
+        返回 ``{"face_count": ..., "person_count": ..., "thumbs_removed": ...}``。
+        """
+        if not self.face_enabled:
+            return {"face_count": 0, "person_count": 0, "thumbs_removed": 0}
+
+        # 若正在扫描，等待当前任务结束，避免在写入过程中清表导致竞态。
+        scan_task = self._face_scan_task
+        if scan_task is not None and not scan_task.done():
+            try:
+                await asyncio.shield(asyncio.wait_for(scan_task, timeout=30))
+            except (asyncio.TimeoutError, Exception):  # pragma: no cover
+                logger.warning("等待人脸扫描结束超时或异常，仍继续执行清空")
+
+        store = await self.get_face_store()
+        if store is None:
+            return {"face_count": 0, "person_count": 0, "thumbs_removed": 0}
+
+        summary = await store.clear_all()
+
+        thumbs_removed = 0
+        try:
+            for entry in self._face_thumb_dir.iterdir():
+                if entry.is_file():
+                    try:
+                        entry.unlink()
+                        thumbs_removed += 1
+                    except OSError as exc:
+                        logger.warning(
+                            "删除人脸缩略图失败 path=%s err=%s", entry, exc
+                        )
+        except FileNotFoundError:
+            self._face_thumb_dir.mkdir(parents=True, exist_ok=True)
+
+        if self._face_worker is not None:
+            try:
+                self._face_worker.reset_stats()
+            except Exception:  # pragma: no cover
+                logger.exception("重置人脸 worker 统计失败")
+        self._face_rescan_pending = False
+        self._face_rescan_iter = None
+
+        summary["thumbs_removed"] = thumbs_removed
+        logger.info(
+            "已清空所有人脸数据: faces=%s persons=%s thumbs=%s",
+            summary.get("face_count", 0),
+            summary.get("person_count", 0),
+            thumbs_removed,
+        )
+        return summary
 
     # ----- 状态查询 -----
 
@@ -758,8 +939,8 @@ class IntelligenceManager:
         if hf_mirror_url is not None:
             self._downloader.update_mirror(hf_mirror_url)
         if max_concurrent_downloads is not None:
-            new_value = max(1, min(3, int(max_concurrent_downloads)))
-            self._download_sema = asyncio.Semaphore(new_value)
+            self._max_concurrent_downloads = max(1, min(3, int(max_concurrent_downloads)))
+            self._download_sema = asyncio.Semaphore(self._max_concurrent_downloads)
         if face_min_det_score is not None:
             try:
                 self._face_min_det_score = max(0.0, min(1.0, float(face_min_det_score)))
@@ -781,6 +962,7 @@ class IntelligenceManager:
                 min_face_size=self._face_min_face_size,
                 min_blur_var=self._face_min_blur_var,
             )
+        self._save_settings_file()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -1009,6 +1191,22 @@ class IntelligenceManager:
     def _state_path(self) -> Path:
         return self._intelligence_dir / _STATE_FILENAME
 
+    @property
+    def _settings_path(self) -> Path:
+        return self._intelligence_dir / _SETTINGS_FILENAME
+
+    def _settings_payload(self) -> dict[str, Any]:
+        return {
+            "feature_enabled": self._feature_enabled,
+            "clip_enabled": self._clip_enabled,
+            "face_enabled": self._face_enabled,
+            "hf_mirror_url": self._downloader.hf_mirror_url,
+            "max_concurrent_downloads": self._max_concurrent_downloads,
+            "face_min_det_score": self._face_min_det_score,
+            "face_min_face_size": self._face_min_face_size,
+            "face_min_blur_var": self._face_min_blur_var,
+        }
+
     def _refresh_disk_status_sync(self) -> None:
         """启动时根据磁盘文件刷新状态。"""
         for key, spec in self._models.items():
@@ -1055,6 +1253,70 @@ class IntelligenceManager:
             os.replace(tmp_path, self._state_path)
         except OSError as exc:
             logger.warning("保存 intelligence 状态失败: %s", exc)
+
+    def _save_settings_file(self) -> None:
+        payload = {"version": 1, "settings": self._settings_payload()}
+        try:
+            tmp_path = self._settings_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp_path, self._settings_path)
+        except OSError as exc:
+            logger.warning("保存 intelligence 设置失败: %s", exc)
+
+    def _load_settings_file(self) -> None:
+        path = self._settings_path
+        if not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("intelligence 设置文件损坏: %s", exc)
+            return
+        settings = data.get("settings") if isinstance(data, dict) else None
+        if not isinstance(settings, dict):
+            return
+
+        if "feature_enabled" in settings:
+            self._feature_enabled = bool(settings.get("feature_enabled"))
+        if "clip_enabled" in settings:
+            self._clip_enabled = bool(settings.get("clip_enabled"))
+        if "face_enabled" in settings:
+            self._face_enabled = bool(settings.get("face_enabled"))
+        if "hf_mirror_url" in settings:
+            self._downloader.update_mirror(str(settings.get("hf_mirror_url") or ""))
+        if "max_concurrent_downloads" in settings:
+            try:
+                self._max_concurrent_downloads = max(
+                    1,
+                    min(3, int(settings.get("max_concurrent_downloads"))),
+                )
+                self._download_sema = asyncio.Semaphore(self._max_concurrent_downloads)
+            except (TypeError, ValueError):
+                pass
+        if "face_min_det_score" in settings:
+            try:
+                self._face_min_det_score = max(
+                    0.0,
+                    min(1.0, float(settings.get("face_min_det_score"))),
+                )
+            except (TypeError, ValueError):
+                pass
+        if "face_min_face_size" in settings:
+            try:
+                self._face_min_face_size = max(
+                    0,
+                    int(settings.get("face_min_face_size")),
+                )
+            except (TypeError, ValueError):
+                pass
+        if "face_min_blur_var" in settings:
+            try:
+                self._face_min_blur_var = max(
+                    0.0,
+                    float(settings.get("face_min_blur_var")),
+                )
+            except (TypeError, ValueError):
+                pass
 
     def _load_state_file(self) -> None:
         path = self._state_path

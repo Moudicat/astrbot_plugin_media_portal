@@ -586,8 +586,10 @@ async function onScan() {
       toast.push(t("settings.intelligence.clipScanBusy"), "info");
     } else {
       toast.push(t("settings.intelligence.clipScanStarted"), "success");
-      progressStore.bump();
+      // 乐观插入运行任务，避免扫描秒级完成时进度条来不及显示。
+      progressStore.markScanRunning("clip-scan");
     }
+    progressStore.bump();
     await refresh();
   } catch (error) {
     toast.push((error as Error).message, "error");

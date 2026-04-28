@@ -263,3 +263,45 @@ def test_intelligence_patch_settings(tmp_path: Path) -> None:
     )
     assert resp_cancel.status_code == 200
     assert resp_cancel.json()["cancelled"] is False
+
+
+def test_intelligence_settings_persist_to_plugin_data(tmp_path: Path) -> None:
+    plugin_data_dir = (tmp_path / "plugin_data").resolve()
+    models = [_make_dummy_spec()]
+    manager = IntelligenceManager(
+        plugin_data_dir=plugin_data_dir,
+        feature_enabled=False,
+        clip_enabled=False,
+        face_enabled=False,
+        hf_mirror_url="",
+        models=models,
+    )
+    manager.update_settings(
+        feature_enabled=True,
+        clip_enabled=True,
+        face_enabled=True,
+        hf_mirror_url="https://hf-mirror.com",
+        max_concurrent_downloads=2,
+        face_min_det_score=0.72,
+        face_min_face_size=88,
+        face_min_blur_var=42.5,
+    )
+
+    restored = IntelligenceManager(
+        plugin_data_dir=plugin_data_dir,
+        feature_enabled=False,
+        clip_enabled=False,
+        face_enabled=False,
+        hf_mirror_url="",
+        models=models,
+    )
+
+    assert restored.feature_enabled is True
+    assert restored.clip_enabled is True
+    assert restored.face_enabled is True
+    assert restored.hf_mirror_url == "https://hf-mirror.com"
+    assert restored.face_quality_thresholds == {
+        "min_det_score": 0.72,
+        "min_face_size": 88.0,
+        "min_blur_var": 42.5,
+    }

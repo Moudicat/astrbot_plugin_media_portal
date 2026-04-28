@@ -117,6 +117,7 @@
               type="button"
               :title="$t('media.clearSearch')"
               :aria-label="$t('media.clearSearch')"
+              @mousedown.prevent
               @click="clearSearch"
             >
               <Icon name="x" :size="14" />
@@ -168,7 +169,7 @@
         </div>
       </div>
 
-      <div v-if="searchMode !== 'clip'" class="kind-tabs">
+      <div v-if="searchMode !== 'clip' || !(query || '').trim()" class="kind-tabs">
         <button
           v-for="tab in kindTabs"
           :key="tab.id"
@@ -310,7 +311,7 @@
       />
     </div>
 
-    <footer v-if="searchMode !== 'clip' && totalPages > 0" class="pager">
+    <footer v-if="totalPages > 0 && (searchMode !== 'clip' || !(query || '').trim())" class="pager">
       <button class="icon sm" :disabled="page <= 1" @click="$emit('page-change', page - 1)">
         <Icon name="chevron-left" :size="15" />
       </button>
@@ -550,7 +551,6 @@ const kindTabs = computed(() => [
 function submitSearch() {
   clearSearchTimer();
   emitSearchIfChanged(localQuery.value ?? "");
-  searchInput.value?.blur();
 }
 function clearSearch() {
   clearSearchTimer();

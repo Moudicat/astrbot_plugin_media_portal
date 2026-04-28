@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover
     astrbot_config = None
 
 from .core import CategoryManager, MediaDownloader, MediaManager, load_plugin_settings
-from .core.intelligence import IntelligenceManager
+from .core.intelligence import IntelligenceManager, attach_auto_scan_post_save
 from .core.utils import (
     format_duration,
     format_size,
@@ -154,53 +154,15 @@ class MediaPortalPlugin(Star):
                 return
             await self.media_manager.initialize()
             await self.media_manager.ensure_scanned()
-            self.media_manager.register_post_save_callback(
-                self._on_media_post_save
+            # 把"上传/恢复后自动触发 CLIP / 人脸扫描"统一交由共享 helper 注册，
+            # 这样 ``scripts/debug_webui.py`` 单跑模式也能复用同一份逻辑。
+            attach_auto_scan_post_save(
+                media_manager=self.media_manager,
+                intelligence_manager=self.intelligence_manager,
             )
             if self.settings.webui.enabled:
                 await self._start_webui()
             self._initialized = True
-
-    async def _on_media_post_save(self, record: Any, action: str) -> None:
-        """媒体落地后自动触发 CLIP / 人脸增量索引。
-
-        - 仅对 ``image`` 类型生效；
-        - ``trigger_*_scan`` 已具备「任务在跑则跳过」的去重逻辑，所以多次上传只会
-          排队而不会并发；
-        - 任意子流程失败都被吞掉，仅记录 debug 日志。
-        """
-        if action not in {"created", "restored"}:
-            return
-        kind = getattr(record, "kind", "") or ""
-        if str(kind).lower() != "image":
-            return
-        manager = self.intelligence_manager
-        if manager is None or not manager.feature_enabled:
-            return
-
-        async def _iter_image_records():
-            getter = getattr(self.media_manager, "list_image_records_minimal", None)
-            if not callable(getter):
-                return []
-            try:
-                return await getter()
-            except Exception:
-                return []
-
-        try:
-            if manager.clip_enabled:
-                await manager.trigger_clip_scan(
-                    iter_image_records=_iter_image_records
-                )
-        except Exception as exc:
-            logger.debug("自动 CLIP 索引失败: %s", exc)
-        try:
-            if manager.face_enabled:
-                await manager.trigger_face_scan(
-                    iter_image_records=_iter_image_records
-                )
-        except Exception as exc:
-            logger.debug("自动人脸扫描失败: %s", exc)
 
     async def _ensure_ready(self) -> tuple[bool, str]:
         if self._initialized:
