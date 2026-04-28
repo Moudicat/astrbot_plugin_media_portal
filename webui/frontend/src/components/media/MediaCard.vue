@@ -237,6 +237,7 @@ function onNameClick() {
 }
 .preview-score {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
@@ -246,6 +247,7 @@ function onNameClick() {
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
   border: 1px solid transparent;
+  white-space: nowrap;
 }
 .preview-score :deep(svg) {
   flex: none;

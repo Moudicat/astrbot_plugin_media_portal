@@ -1530,16 +1530,19 @@ button.block {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-wrap: nowrap;
   justify-content: space-between;
   align-items: flex-start;
   padding: 8px;
   pointer-events: none;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .preview-kind,
 .preview-duration {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
@@ -1548,6 +1551,7 @@ button.block {
   color: #fff;
   font-size: 11px;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .preview-duration {
