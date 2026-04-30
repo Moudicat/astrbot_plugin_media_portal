@@ -195,6 +195,7 @@
     "dropHint": "Drop files here, or click to choose",
     "dropzoneHint": "Images / videos / audios, multi-select supported",
     "dropzoneHintWithLimit": "Images / videos / audios, multi-select · max {mb}MB per file",
+    "dropTipPc": "Tip: just drop files onto the main page to upload them to the current category — no need to use this dialog.",
     "summary": "{count} files · {size} total",
     "oversizedTitle": "Exceeds size limit, will be skipped",
     "oversizedBadge": "Oversize",
@@ -212,6 +213,8 @@
     "duplicateTitle": "Duplicate detected",
     "duplicateMessage": "A file with the same SHA256 already exists: \"{name}\".",
     "duplicateDetail": "Continue to upload a new copy with identical content, or cancel this upload.",
+    "duplicateExistingHint": "Existing category: \"{category}\"",
+    "duplicateAwaiting": "Awaiting confirmation (duplicate)",
     "duplicateContinue": "Continue upload",
     "duplicateCancel": "Cancel upload",
     "duplicateCancelled": "Duplicate upload cancelled"

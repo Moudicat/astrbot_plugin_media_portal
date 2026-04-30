@@ -195,6 +195,7 @@
     "dropHint": "拖拽文件到这里，或点击选择",
     "dropzoneHint": "支持图片 / 视频 / 音频，多选上传",
     "dropzoneHintWithLimit": "支持图片 / 视频 / 音频，多选上传 · 单文件上限 {mb}MB",
+    "dropTipPc": "小提示：直接将文件拖到主页面即可上传到当前分类，无需在此弹窗手动选择。",
     "summary": "共 {count} 个文件 · 总计 {size}",
     "oversizedTitle": "超过体积上限，保存时将被跳过",
     "oversizedBadge": "超出上限",
@@ -212,6 +213,8 @@
     "duplicateTitle": "检测到重复文件",
     "duplicateMessage": "文件「{name}」已存在相同 SHA256 记录。",
     "duplicateDetail": "继续上传将保存一个副本（内容相同），取消则不上传该文件。",
+    "duplicateExistingHint": "已存在分类：「{category}」",
+    "duplicateAwaiting": "等待确认（重复文件）",
     "duplicateContinue": "继续上传",
     "duplicateCancel": "取消上传",
     "duplicateCancelled": "已取消重复文件上传"

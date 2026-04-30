@@ -38,6 +38,10 @@
           </div>
 
           <template v-if="mode === 'file'">
+            <div v-if="isPcHover" class="upload-tip" role="note">
+              <Icon name="info" :size="14" />
+              <span>{{ $t("upload.dropTipPc") }}</span>
+            </div>
             <div
               class="dropzone"
               :class="{ dragover }"
@@ -120,7 +124,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Icon from "@/components/common/Icon.vue";
 import { formatSize } from "@/utils/format";
@@ -158,6 +162,38 @@ const url = ref("");
 const filename = ref("");
 const dragover = ref(false);
 const fileInput = ref<HTMLInputElement | null>(null);
+
+const PC_HOVER_QUERY = "(hover: hover) and (pointer: fine)";
+const isPcHover = ref(
+  typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(PC_HOVER_QUERY).matches
+    : true,
+);
+let pcHoverMql: MediaQueryList | null = null;
+const onPcHoverChange = (event: MediaQueryListEvent) => {
+  isPcHover.value = event.matches;
+};
+
+onMounted(() => {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  pcHoverMql = window.matchMedia(PC_HOVER_QUERY);
+  isPcHover.value = pcHoverMql.matches;
+  if (typeof pcHoverMql.addEventListener === "function") {
+    pcHoverMql.addEventListener("change", onPcHoverChange);
+  } else if (typeof (pcHoverMql as any).addListener === "function") {
+    (pcHoverMql as any).addListener(onPcHoverChange);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (!pcHoverMql) return;
+  if (typeof pcHoverMql.removeEventListener === "function") {
+    pcHoverMql.removeEventListener("change", onPcHoverChange);
+  } else if (typeof (pcHoverMql as any).removeListener === "function") {
+    (pcHoverMql as any).removeListener(onPcHoverChange);
+  }
+  pcHoverMql = null;
+});
 
 watch(
   () => props.visible,
@@ -249,3 +285,23 @@ function submit() {
   emit("close");
 }
 </script>
+
+<style scoped>
+.upload-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--info-soft);
+  color: var(--info);
+  border: 1px solid color-mix(in srgb, var(--info) 28%, transparent);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.upload-tip :deep(.icon) {
+  margin-top: 2px;
+  flex: none;
+}
+</style>

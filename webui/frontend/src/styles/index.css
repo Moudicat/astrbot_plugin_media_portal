@@ -2014,6 +2014,7 @@ button.block {
   font-size: 12.5px;
   line-height: 1.55;
   word-break: break-word;
+  white-space: pre-line;
 }
 
 .confirm-footer {

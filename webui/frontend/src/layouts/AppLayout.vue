@@ -582,10 +582,23 @@ function hasFiles(event: DragEvent): boolean {
   return Array.prototype.indexOf.call(types, "Files") >= 0;
 }
 
+function resetGlobalDragState() {
+  dragDepth = 0;
+  if (dragHideTimer) {
+    clearTimeout(dragHideTimer);
+    dragHideTimer = null;
+  }
+  globalDragging.value = false;
+}
+
 function onWindowDragEnter(event: DragEvent) {
   if (!hasFiles(event)) return;
   if (route.name === "login") return;
   event.preventDefault();
+  if (uploadVisible.value) {
+    resetGlobalDragState();
+    return;
+  }
   dragDepth += 1;
   if (dragHideTimer) {
     clearTimeout(dragHideTimer);
@@ -599,11 +612,16 @@ function onWindowDragOver(event: DragEvent) {
   if (route.name === "login") return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  if (uploadVisible.value) {
+    if (globalDragging.value) resetGlobalDragState();
+    return;
+  }
   globalDragging.value = true;
 }
 
 function onWindowDragLeave(event: DragEvent) {
   if (!hasFiles(event)) return;
+  if (uploadVisible.value) return;
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) {
     if (dragHideTimer) clearTimeout(dragHideTimer);
@@ -616,14 +634,14 @@ function onWindowDragLeave(event: DragEvent) {
 
 function onWindowDrop(event: DragEvent) {
   const hasPayload = hasFiles(event);
-  dragDepth = 0;
-  if (dragHideTimer) {
-    clearTimeout(dragHideTimer);
-    dragHideTimer = null;
-  }
-  globalDragging.value = false;
+  resetGlobalDragState();
   if (!hasPayload) return;
   if (route.name === "login") return;
+  if (uploadVisible.value) {
+    // 优先交给 UploadDialog 内部的 dropzone 处理；阻止默认行为以避免浏览器打开文件
+    event.preventDefault();
+    return;
+  }
   event.preventDefault();
   event.stopPropagation();
   const incoming = Array.from(event.dataTransfer?.files || []);

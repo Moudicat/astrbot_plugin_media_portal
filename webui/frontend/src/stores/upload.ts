@@ -1,7 +1,17 @@
 import { defineStore } from "pinia";
-import type { UploadJob } from "@/api/types";
+import type { ConfirmOptions, UploadJob } from "@/api/types";
 import { useAuthStore } from "./auth";
+import { useConfirmStore } from "./confirm";
 import { useProgressStore } from "./progress";
+import { i18n } from "@/i18n";
+
+type ConfirmFn = (options?: ConfirmOptions) => Promise<boolean>;
+type TFn = (key: string, named?: Record<string, unknown>) => string;
+
+const translate: TFn = (key, named) => {
+  const fn = (i18n.global as any).t as (...args: any[]) => string;
+  return named ? fn(key, named) : fn(key);
+};
 
 type RefreshCallback = () => void;
 
@@ -80,7 +90,7 @@ export const useUploadStore = defineStore("upload", {
           cur.progress = Math.max(cur.progress || 0, 99);
         }
       });
-      xhr.addEventListener("load", () => {
+      xhr.addEventListener("load", async () => {
         const cur = this.getJob(id);
         if (!cur) return;
         let payload: any = null;
@@ -99,19 +109,37 @@ export const useUploadStore = defineStore("upload", {
             cur.loaded = cur.size;
             cur.message = "已保存";
           } else if (duplicatesList.length) {
+            const t = translate;
             const first = duplicatesList[0] || {};
-            const existed = first?.existing?.filename || file.name;
-            const ok = typeof window !== "undefined"
-              ? window.confirm(
-                  `检测到重复文件：${existed}\n继续上传将保存一个副本（相同 SHA256）。\n是否继续上传？`,
-                )
-              : false;
+            const existing = first?.existing || {};
+            const existedName = existing.filename || file.name;
+            const existedCategory = existing.category || "";
+            const detailLines = [t("upload.duplicateDetail")];
+            if (existedCategory) {
+              detailLines.unshift(
+                t("upload.duplicateExistingHint", { category: existedCategory }),
+              );
+            }
+            cur.status = "uploading";
+            cur.message = t("upload.duplicateAwaiting");
+            const confirmStore = useConfirmStore() as unknown as { confirm: ConfirmFn };
+            const ok = await confirmStore.confirm({
+              title: t("upload.duplicateTitle"),
+              message: t("upload.duplicateMessage", { name: existedName }),
+              detail: detailLines.join("\n"),
+              confirmText: t("upload.duplicateContinue"),
+              cancelText: t("upload.duplicateCancel"),
+              tone: "warning",
+              icon: "alert-triangle",
+            });
+            const fresh = this.getJob(id);
+            if (!fresh) return;
             if (ok) {
               this.start(id, file, "force");
               return;
             }
-            cur.status = "cancelled";
-            cur.message = "已取消（重复文件）";
+            fresh.status = "cancelled";
+            fresh.message = t("upload.duplicateCancelled");
           } else if (errorsList.length) {
             cur.status = "error";
             cur.message = extractErrorText(errorsList[0], file.name);

@@ -195,6 +195,7 @@
     "dropHint": "ここにファイルをドロップ、またはクリックして選択",
     "dropzoneHint": "画像 / 動画 / 音声、複数選択可",
     "dropzoneHintWithLimit": "画像 / 動画 / 音声、複数選択可 · 1 ファイル最大 {mb}MB",
+    "dropTipPc": "ヒント：メイン画面に直接ファイルをドロップすれば現在のカテゴリへアップロードされます。このダイアログを開く必要はありません。",
     "summary": "{count} 個のファイル · 合計 {size}",
     "oversizedTitle": "サイズ上限を超過、保存時にスキップされます",
     "oversizedBadge": "上限超過",
@@ -212,6 +213,8 @@
     "duplicateTitle": "重複ファイルを検出",
     "duplicateMessage": "同じ SHA256 の既存ファイルがあります：{name}",
     "duplicateDetail": "続行すると内容が同一のコピーを保存します。キャンセルでこのアップロードを中止します。",
+    "duplicateExistingHint": "既存カテゴリ：「{category}」",
+    "duplicateAwaiting": "確認待ち（重複ファイル）",
     "duplicateContinue": "アップロードを続行",
     "duplicateCancel": "アップロードを中止",
     "duplicateCancelled": "重複ファイルのアップロードを中止しました"
