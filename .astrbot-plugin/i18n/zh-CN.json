@@ -1,0 +1,117 @@
+{
+  "metadata": {
+    "display_name": "媒体门户",
+    "short_desc": "AI 可用的多媒体收藏、检索与 Web 管理面板。",
+    "desc": "为 AI 与用户打造的多媒体门户：支持 AI 智能分类收藏，集成音视频预览播放与可视化管理的 AstrBot 插件。"
+  },
+  "config": {
+    "webui": {
+      "description": "WebUI 管理面板",
+      "enabled": {
+        "description": "启用 WebUI",
+        "hint": "开启后会在插件加载时启动多媒体管理控制台。"
+      },
+      "host": {
+        "description": "监听地址",
+        "hint": "127.0.0.1 仅本机可访问，0.0.0.0 允许局域网访问。"
+      },
+      "port": {
+        "description": "监听端口",
+        "hint": "请确保不与 AstrBot 主面板或其他服务端口冲突。"
+      },
+      "access_password": {
+        "description": "访问密码",
+        "hint": "留空会在启动时自动生成随机密码。"
+      },
+      "session_timeout": {
+        "description": "会话超时（秒）",
+        "hint": "登录 Token 的活动超时时间。"
+      },
+      "public_base_url": {
+        "description": "自定义公开访问地址",
+        "hint": "例如 https://media.example.com 或 http://192.168.1.2:7003；留空时自动使用默认 host:port。"
+      },
+      "expose_astrbot_data": {
+        "description": "暴露 AstrBot 数据目录（只读）",
+        "hint": "开启后可在 WebUI 浏览 /astrbot/data 下文件。建议仅在受信任环境启用。"
+      },
+      "allowed_origins": {
+        "description": "允许跨域来源（CORS）",
+        "hint": "留空表示不开放跨域。按需填写完整 Origin，例如 https://panel.example.com。"
+      },
+      "readonly_token_ttl": {
+        "description": "媒体预览 token 有效期（秒）",
+        "hint": "WebUI 前端用于媒体预览的只读 token 过期时间。"
+      },
+      "share_url_ttl": {
+        "description": "分享链接 token 有效期（秒）",
+        "hint": "get_media_url / 复制链接生成的媒体访问 token 过期时间。"
+      },
+      "data_token_ttl": {
+        "description": "Data 文件预览 token 有效期（秒）",
+        "hint": "Data 浏览中的 /api/data-file 访问 token 过期时间。"
+      },
+      "totp_enabled": {
+        "description": "启用 TOTP 双因素登录（Google Authenticator）",
+        "hint": "开启后允许在设置面板的「账号安全」分区绑定 6 位动态码二次验证。"
+      },
+      "totp_issuer": {
+        "description": "TOTP 二维码 Issuer",
+        "hint": "在 Authenticator App 中显示的服务名称。"
+      },
+      "totp_account": {
+        "description": "TOTP 账号名",
+        "hint": "在 Authenticator App 中显示的账号标识，仅作显示用途。"
+      }
+    },
+    "storage": {
+      "description": "存储配置",
+      "location_mode": {
+        "description": "媒体库存储位置",
+        "hint": "plugin_data=data/plugin_data/astrbot_plugin_media_portal/media（默认）；astrbot_data=data/media。",
+        "labels": [
+          "AstrBot 数据目录",
+          "插件数据目录"
+        ]
+      }
+    },
+    "intelligence": {
+      "description": "智能能力（CLIP / 人脸等本地模型）",
+      "enabled": {
+        "description": "启用智能能力总开关",
+        "hint": "关闭时 CLIP / 人脸等所有本地模型功能不会被加载，对外接口与 LLM 工具均不可用。"
+      },
+      "hf_mirror_url": {
+        "description": "HuggingFace 镜像地址",
+        "hint": "留空表示直连 huggingface.co。国内可填 https://hf-mirror.com 等镜像，下载模型时会自动改写。"
+      },
+      "max_concurrent_downloads": {
+        "description": "模型并发下载数",
+        "hint": "为避免占用带宽，默认串行下载；取值范围 1~3。"
+      }
+    },
+    "downloader": {
+      "description": "下载配置",
+      "max_file_size_mb": {
+        "description": "单文件最大体积（MB）",
+        "hint": "WebUI 上传与 URL 下载都遵循此上限，默认 500MB。"
+      },
+      "allowed_kinds": {
+        "description": "允许保存的媒体类型",
+        "hint": "可选 image / video / audio。"
+      },
+      "default_move_local": {
+        "description": "本地路径保存默认移动文件",
+        "hint": "开启时 save_media(local_path) 默认使用移动（mv）而非拷贝。"
+      },
+      "allow_local_path_source": {
+        "description": "允许 save_media 接受本地文件路径",
+        "hint": "关闭后 save_media 的 source 参数仅支持 URL，本地文件必须通过消息附件上传；开启时 LLM 可通过 source 参数传入服务器本地绝对路径，请结合下方白名单限制允许的目录。"
+      },
+      "local_path_whitelist": {
+        "description": "本地路径白名单（目录前缀）",
+        "hint": "仅当 allow_local_path_source=true 时生效。save_media 的 source 参数必须位于列表中任一目录（或其子目录）下，否则拒绝。列表置空等同于禁止本地路径。"
+      }
+    }
+  }
+}
