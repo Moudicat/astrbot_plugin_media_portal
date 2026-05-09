@@ -25,6 +25,7 @@ from .core.utils import (
     format_size,
     format_timestamp,
     parse_bool,
+    slugify_category,
 )
 from .webui import WebUIServer
 
@@ -621,6 +622,43 @@ class MediaPortalPlugin(Star):
             )
         return "\n".join(lines)
 
+    @llm_tool(name="create_or_update_category")
+    async def tool_create_or_update_category(
+        self,
+        event: AstrMessageEvent,
+        category: str,
+        description: str = "",
+    ) -> str:
+        """创建分类或更新分类描述。
+
+        Args:
+            category(str): 分类名。
+            description(str): 分类描述；留空表示仅确保分类存在，传 "-" 表示清空描述。
+        """
+        _ = event
+        ok, message = await self._ensure_ready()
+        if not ok:
+            return message
+        raw_category = str(category or "").strip()
+        if not raw_category:
+            return "请提供分类名。"
+
+        normalized = slugify_category(raw_category)
+        existed = normalized in set(self.category_manager.list_categories())
+        normalized = self.category_manager.ensure_category(raw_category)
+
+        raw_description = str(description or "").strip()
+        if raw_description == "-":
+            self.category_manager.set_description(normalized, "")
+        elif raw_description:
+            self.category_manager.set_description(normalized, raw_description)
+
+        current_description = self.category_manager.get_description(normalized)
+        action = "已更新" if existed else "已创建"
+        if current_description:
+            return f"{action}分类：{normalized}，描述={current_description}"
+        return f"{action}分类：{normalized}"
+
     @llm_tool(name="list_media_in_category")
     async def tool_list_media_in_category(
         self,
@@ -652,45 +690,6 @@ class MediaPortalPlugin(Star):
             lines.append(f"- {text}")
         return "\n".join(lines)
 
-    @llm_tool(name="search_media_semantic")
-    async def tool_search_media_semantic(
-        self,
-        event: AstrMessageEvent,
-        query: str,
-        limit: int = 10,
-    ) -> str:
-        """语义检索图片（CLIP 语义搜索；仅在管理面板启用并下载完模型后可用）。
-
-        Args:
-            query(str): 自然语言描述，例如 "一只在草地上的橘色小猫"。
-            limit(int): 返回数量。
-        """
-        _ = event
-        ok, message = await self._ensure_ready()
-        if not ok:
-            return message
-        if (
-            self.intelligence_manager is None
-            or not self.intelligence_manager.clip_enabled
-        ):
-            return "CLIP 语义检索未启用，请前往后台 → 设置 → 智能能力面板下载并启用 CLIP 模型。"
-        text = str(query or "").strip()
-        if not text:
-            return "请输入要检索的描述。"
-        top_k = max(1, min(50, self._parse_limit(limit, 10)))
-        pairs = await self.intelligence_manager.search_clip_by_text(text, top_k=top_k)
-        if not pairs:
-            return "没有匹配的图片，可能尚未完成索引。"
-        lines = [f"语义检索 “{text}”："]
-        for media_id, score in pairs:
-            record = await self.media_manager.get_by_id(int(media_id))
-            if record is None:
-                continue
-            lines.append(f"- score={score:.3f} {self._compact_record(record)}")
-        if len(lines) == 1:
-            return "没有匹配的图片。"
-        return "\n".join(lines)
-
     @llm_tool(name="search_media")
     async def tool_search_media(
         self,
@@ -698,28 +697,96 @@ class MediaPortalPlugin(Star):
         query: str,
         limit: int = 5,
         category: str = "",
+        kind: str = "",
+        mode: str = "auto",
     ) -> str:
-        """在媒体库中搜索媒体文件。返回字段：id/分类/类型/文件名，以及大小、上传时间；图片附分辨率、音频附时长。
+        """搜索媒体文件。默认自动合并关键词搜索与可用的 CLIP 图片语义搜索。
 
         Args:
-            query(str): 文件名/描述关键词。
+            query(str): 文件名/描述/标签关键词，或自然语言内容描述。
             limit(int): 返回数量。
             category(str): 可选分类过滤。
+            kind(str): 可选类型过滤 image/video/audio。
+            mode(str): 搜索模式；auto=关键词+可用语义，keyword=仅关键词，semantic=仅 CLIP 语义。
         """
         _ = event
         ok, message = await self._ensure_ready()
         if not ok:
             return message
-        records = await self.media_manager.search_media(
-            query,
-            limit=max(1, min(30, self._parse_limit(limit, 5))),
-            category=category,
-        )
-        if not records:
+        text = str(query or "").strip()
+        if not text:
+            return "请输入搜索关键词或自然语言描述。"
+
+        requested_limit = max(1, min(30, self._parse_limit(limit, 5)))
+        requested_mode = str(mode or "auto").strip().lower()
+        if requested_mode not in {"auto", "keyword", "semantic"}:
+            requested_mode = "auto"
+        requested_kind = str(kind or "").strip().lower()
+        if requested_kind not in {"", "image", "video", "audio"}:
+            return "kind 无效，请传 image / video / audio 或留空。"
+        normalized_category = slugify_category(category) if str(category or "").strip() else ""
+
+        def _record_allowed(record: Any) -> bool:
+            if normalized_category and getattr(record, "category", "") != normalized_category:
+                return False
+            if requested_kind and getattr(record, "kind", "") != requested_kind:
+                return False
+            return True
+
+        results: list[tuple[str, float | None, Any]] = []
+        seen_ids: set[int] = set()
+
+        def _append_result(source: str, record: Any, score: float | None = None) -> None:
+            try:
+                media_id = int(getattr(record, "id", None))
+            except (TypeError, ValueError):
+                return
+            if media_id in seen_ids or not _record_allowed(record):
+                return
+            seen_ids.add(media_id)
+            results.append((source, score, record))
+
+        if requested_mode in {"auto", "keyword"}:
+            keyword_records = await self.media_manager.search_media(
+                text,
+                limit=max(requested_limit, min(50, requested_limit * 3)),
+                category=normalized_category,
+            )
+            for record in keyword_records:
+                _append_result("keyword", record)
+
+        semantic_unavailable = ""
+        if requested_mode in {"auto", "semantic"}:
+            if (
+                self.intelligence_manager is None
+                or not self.intelligence_manager.clip_enabled
+            ):
+                if requested_mode == "semantic":
+                    semantic_unavailable = (
+                        "CLIP 语义检索未启用；如需按图片内容搜索，请前往后台 → 设置 → "
+                        "智能能力面板下载并启用 CLIP 模型。"
+                    )
+            else:
+                pairs = await self.intelligence_manager.search_clip_by_text(
+                    text,
+                    top_k=max(requested_limit, min(50, requested_limit * 3)),
+                )
+                for media_id, score in pairs:
+                    record = await self.media_manager.get_by_id(int(media_id))
+                    if record is not None:
+                        _append_result("semantic", record, float(score))
+
+        if not results:
+            if requested_mode == "semantic" and semantic_unavailable:
+                return semantic_unavailable
             return "未找到匹配媒体。"
-        lines = ["搜索结果："]
-        for text in self._detailed_records(records):
-            lines.append(f"- {text}")
+
+        lines = [f"搜索结果（{len(results[:requested_limit])}）："]
+        for source, score, record in results[:requested_limit]:
+            source_text = f"来源={source}"
+            if score is not None:
+                source_text += f" score={score:.3f}"
+            lines.append(f"- [{source_text}] {self._detailed_record(record)}")
         return "\n".join(lines)
 
     @llm_tool(name="get_media_url")
@@ -748,19 +815,23 @@ class MediaPortalPlugin(Star):
             return "WebUI 未启用，无法生成 URL。"
         return self.webui_server.build_media_url(record)
 
-    @llm_tool(name="send_media")
-    async def tool_send_media(
-        self, event: AstrMessageEvent, media_id_or_query: str
+    @llm_tool(name="send_media_by_id")
+    async def tool_send_media_by_id(
+        self, event: AstrMessageEvent, media_id: str
     ) -> str:
-        """向当前会话发送媒体库中的媒体 （不是通用文件发送）
+        """按媒体 ID 向当前会话发送媒体库中的媒体
 
         Args:
-            media_id_or_query(string): 可传媒体 ID 或搜索关键词，不允许本地路径/URL。
+            media_id(string): 媒体 ID（数字字符串，例如 "12"）。
         """
         ok, message = await self._ensure_ready()
         if not ok:
             return message
-        record = await self._resolve_record_from_input(media_id_or_query)
+        try:
+            resolved_id = int(str(media_id).strip())
+        except (TypeError, ValueError):
+            return "media_id 无效，请先调用 search_media 获取明确的数字 ID。"
+        record = await self.media_manager.get_by_id(resolved_id)
         if not record:
             return "未找到可发送的媒体。"
         file_path = Path(record.abs_path)

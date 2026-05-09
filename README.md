@@ -120,7 +120,7 @@ pip install -r requirements.txt
    - `/media webui`
 3. 复制返回地址，在浏览器打开后输入密码登录；
 4. 使用上传/URL 保存功能入库媒体；
-5. 在对话中让 AI 调用 `save_media`、`search_media`、`send_media` 等工具。
+5. 在对话中让 AI 调用 `save_media`、`search_media`、`send_media_by_id` 等工具。
 
 ## 🤖 LLM 工具列表
 
@@ -135,12 +135,15 @@ pip install -r requirements.txt
 ### 其他工具
 
 - `list_media_categories()`
+- `create_or_update_category(category, description)`  
+  创建分类或更新分类描述；`description` 留空仅确保分类存在，传 `"-"` 表示清空描述。
 - `list_media_in_category(category, limit, kind)`
-- `search_media(query, limit, category)`
+- `search_media(query, limit, category, kind, mode)`  
+  统一搜索入口，`mode` 支持 `auto` / `keyword` / `semantic`：默认 `auto` 会先做关键词检索，并在 CLIP 可用时合并图片语义检索结果；`kind` 可过滤 `image` / `video` / `audio`。
 - `get_media_url(media_id)`  
   返回 WebUI 暴露 URL，生成优先级：`webui.public_base_url` > `callback_api_base` > 自动 `host:port`。
-- `send_media(media_id_or_query)`  
-  支持传 ID 或关键词，工具内部直接向当前会话发送媒体。
+- `send_media_by_id(media_id)`  
+  按明确媒体 ID 向当前会话发送媒体；如需按描述查找，请先调用 `search_media` 获取候选 ID。
 - `move_media(media_ids, category)`  
   将一个或多个媒体重分类到目标分类，`media_ids` 支持单值或逗号分隔（如 `"12,15"`），目标分类不存在会自动创建。
 - `update_media(media_id, category, description, tags)`  
@@ -148,10 +151,11 @@ pip install -r requirements.txt
 
 ### 智能能力（按需开启）
 
-> 仅在已下载对应模型并启用功能后注册到 LLM；详见下文 [🧠 智能能力（可选）](#-智能能力可选)。
+CLIP 图片语义检索不再作为独立 LLM 工具暴露，而是合并进 `search_media`：
 
-- `search_media_semantic(query, limit, category)`  
-  本地 CLIP 语义检索，按自然语言搜索媒体库（仅在 CLIP 模型就绪时可用）。
+- `mode="auto"`：关键词检索 + 可用时合并 CLIP 语义检索；
+- `mode="semantic"`：仅使用 CLIP 语义检索；若模型未就绪，会返回启用提示；
+- `mode="keyword"`：仅按文件名 / 描述 / 标签 / sha256 等元数据检索。
 
 ## 🧰 命令列表
 
@@ -288,11 +292,11 @@ WebUI 左侧菜单「人物」入口（启用智能能力总开关并开启人�
 
 ### 4️⃣ LLM 工具暴露
 
-下表中的工具仅在对应能力启用且模型就绪时**自动注册**到 LLM；未启用时完全不会出现，避免 Agent 误调用。
+CLIP 图片语义检索已合并进 `search_media`，不再额外注册 `search_media_semantic`。未启用 CLIP 时，`search_media(mode="auto")` 会正常执行关键词检索；`mode="semantic"` 会返回启用提示。
 
 | 工具 | 说明 |
 | --- | --- |
-| `search_media_semantic` | 自然语言语义检索（基于 CLIP） |
+| `search_media(mode="auto")` | 统一媒体搜索；CLIP 就绪时自动合并自然语言语义检索结果 |
 
 ### 5️⃣ 隐私 & 资源说明
 

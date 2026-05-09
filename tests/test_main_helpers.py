@@ -402,9 +402,125 @@ def test_tool_move_media_and_update_media_text_paths() -> None:
     asyncio.run(scenario())
 
 
-def test_tool_send_media_branches(tmp_path: Path) -> None:
+def test_tool_create_or_update_category_paths() -> None:
+    class _CategoryManager:
+        def __init__(self):
+            self.descriptions = {"old": "旧描述"}
+
+        def list_categories(self):
+            return sorted(self.descriptions.keys())
+
+        def ensure_category(self, category: str):
+            normalized = category.strip().replace(" ", "_")
+            self.descriptions.setdefault(normalized, "")
+            return normalized
+
+        def set_description(self, category: str, description: str):
+            self.descriptions[category] = description
+
+        def get_description(self, category: str):
+            return self.descriptions.get(category, "")
+
     async def _ready():
         return True, ""
+
+    async def scenario() -> None:
+        plugin = MediaPortalPlugin.__new__(MediaPortalPlugin)
+        plugin._ensure_ready = _ready
+        plugin.category_manager = _CategoryManager()
+
+        blank = await plugin.tool_create_or_update_category(None, "  ")
+        created = await plugin.tool_create_or_update_category(None, "new cat", "新分类")
+        updated = await plugin.tool_create_or_update_category(None, "old", "-")
+
+        assert blank == "请提供分类名。"
+        assert "已创建分类：new_cat，描述=新分类" == created
+        assert updated == "已更新分类：old"
+
+    asyncio.run(scenario())
+
+
+def test_tool_search_media_merges_keyword_and_semantic_results() -> None:
+    record_1 = SimpleNamespace(
+        id=1,
+        category="gallery",
+        filename="sunset.jpg",
+        kind="image",
+        size=1024,
+        created_at=0,
+        duration=0,
+    )
+    record_2 = SimpleNamespace(
+        id=2,
+        category="gallery",
+        filename="beach.jpg",
+        kind="image",
+        size=2048,
+        created_at=0,
+        duration=0,
+    )
+
+    class _Manager:
+        async def search_media(self, query: str, limit: int = 5, category: str = ""):
+            _ = (query, limit, category)
+            return [record_1]
+
+        async def get_by_id(self, media_id: int):
+            return {1: record_1, 2: record_2}.get(media_id)
+
+    class _Intelligence:
+        clip_enabled = True
+
+        async def search_clip_by_text(self, query: str, top_k: int = 10):
+            _ = (query, top_k)
+            return [(2, 0.91), (1, 0.88)]
+
+    async def _ready():
+        return True, ""
+
+    async def scenario() -> None:
+        plugin = MediaPortalPlugin.__new__(MediaPortalPlugin)
+        plugin._ensure_ready = _ready
+        plugin.media_manager = _Manager()
+        plugin.intelligence_manager = _Intelligence()
+
+        merged = await plugin.tool_search_media(
+            None,
+            "海边日落",
+            limit=5,
+            category="gallery",
+            kind="image",
+            mode="auto",
+        )
+        semantic_only = await plugin.tool_search_media(
+            None,
+            "海边日落",
+            limit=5,
+            category="gallery",
+            kind="image",
+            mode="semantic",
+        )
+        invalid_kind = await plugin.tool_search_media(None, "x", kind="doc")
+
+        assert "来源=keyword" in merged
+        assert "来源=semantic score=0.910" in merged
+        assert merged.count("id=1") == 1
+        assert "来源=semantic score=0.910" in semantic_only
+        assert "kind 无效" in invalid_kind
+
+    asyncio.run(scenario())
+
+
+def test_tool_send_media_by_id_branches(tmp_path: Path) -> None:
+    async def _ready():
+        return True, ""
+
+    class _Manager:
+        def __init__(self):
+            self.records = {}
+
+        async def get_by_id(self, media_id: int):
+            return self.records.get(media_id)
 
     class _Event:
         unified_msg_origin = "origin"
@@ -416,25 +532,21 @@ def test_tool_send_media_branches(tmp_path: Path) -> None:
     async def scenario() -> None:
         plugin = MediaPortalPlugin.__new__(MediaPortalPlugin)
         plugin._ensure_ready = _ready
+        plugin.media_manager = _Manager()
         event = _Event()
 
-        async def _resolve_none(_value: str):
-            return None
-
-        plugin._resolve_record_from_input = _resolve_none
-        not_found = await plugin.tool_send_media(event, "x")
+        invalid = await plugin.tool_send_media_by_id(event, "x")
+        not_found = await plugin.tool_send_media_by_id(event, "404")
+        assert "media_id 无效" in invalid
         assert not_found == "未找到可发送的媒体。"
 
         missing_record = SimpleNamespace(
             id=1, category="cat", filename="a.png", kind="image", abs_path=str(tmp_path / "missing.png")
         )
 
-        async def _resolve_missing(_value: str):
-            return missing_record
-
-        plugin._resolve_record_from_input = _resolve_missing
+        plugin.media_manager.records[1] = missing_record
         plugin.webui_server = SimpleNamespace(build_media_url=lambda _r: "http://x/missing")
-        missing = await plugin.tool_send_media(event, "1")
+        missing = await plugin.tool_send_media_by_id(event, "1")
         assert "媒体文件已丢失" in missing and "http://x/missing" in missing
 
         sent_file = tmp_path / "ok.png"
@@ -442,9 +554,6 @@ def test_tool_send_media_branches(tmp_path: Path) -> None:
         ok_record = SimpleNamespace(
             id=2, category="cat", filename="ok.png", kind="image", abs_path=str(sent_file)
         )
-
-        async def _resolve_ok(_value: str):
-            return ok_record
 
         async def _build_component(_record, platform_name: str = ""):
             _ = platform_name
@@ -454,11 +563,11 @@ def test_tool_send_media_branches(tmp_path: Path) -> None:
             _ = platform_name
             return None
 
-        plugin._resolve_record_from_input = _resolve_ok
+        plugin.media_manager.records[2] = ok_record
         plugin._build_media_component = _build_component
         plugin._send_chain_with_compatibility = _send_chain
         plugin.webui_server = SimpleNamespace(build_media_url=lambda _r: "http://x/ok")
-        ok = await plugin.tool_send_media(event, "2")
+        ok = await plugin.tool_send_media_by_id(event, "2")
         assert "已发送媒体: id=2" in ok and "备用直链: http://x/ok" in ok
 
         async def _build_fail(_record, platform_name: str = ""):
@@ -466,7 +575,7 @@ def test_tool_send_media_branches(tmp_path: Path) -> None:
             raise RuntimeError("send-error")
 
         plugin._build_media_component = _build_fail
-        failed = await plugin.tool_send_media(event, "2")
+        failed = await plugin.tool_send_media_by_id(event, "2")
         assert failed == "发送失败，改用 URL: http://x/ok"
 
     asyncio.run(scenario())
